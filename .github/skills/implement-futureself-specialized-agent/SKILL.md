@@ -52,7 +52,6 @@ Required test cases:
 - Schema validity (confidence in 0–1, domain matches, advice non-empty)
 - Blueprint immutability (deep-copy before, assert equal after)
 - Critique round sets `is_refined = True`
-- Tradeoff flags use plain language (no "agent" references)
 
 See `references/schemas.md` for the full test template.
 
@@ -95,17 +94,11 @@ Cause: Agent appends to `user_blueprint` fields directly.
 Solution: Move changes into `key_facts_extracted` for orchestrator-controlled
 merging.
 
-Error: Tradeoff flags reference other agents by name.
-Cause: Agent has knowledge of peer agents.
-Solution: Use plain-language concern areas ("cost", "time commitment") instead.
-Agents have zero knowledge of other agents.
-
 ## Checklist
 
 - [ ] System prompt in `prompts/`, not inlined
-- [ ] `AgentResponse` fully populated (confidence, domain, key_facts, advice, tradeoff_flags, is_refined)
+- [ ] `AgentResponse` fully populated (confidence, domain, advice, urgency, is_refined)
 - [ ] `advice` is an internal memo, not user-addressed
-- [ ] `tradeoff_flags` use plain language — no agent names
 - [ ] `UserBlueprint` never mutated
 - [ ] No imports or calls to other agent modules
 - [ ] LLM calls go through provider abstraction

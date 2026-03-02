@@ -3,7 +3,7 @@
 Implements the reactive pipeline:
   User message
     → select agents (LLM call)
-    → fan-out to workers in parallel
+    → fan-out to workers concurrently
     → detect conflicts (LLM call)
     → optional critique rounds
     → synthesise user-facing reply (LLM call)
@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +32,15 @@ def _load_orchestrator_prompt() -> str:
     return _ORCHESTRATOR_PROMPT_PATH.read_text(encoding="utf-8")
 
 
+def _parse_json_object(raw: str) -> dict[str, Any]:
+    """Best-effort JSON object parser for model output."""
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 # ---------------------------------------------------------------------------
 # 1. Agent selection
 # ---------------------------------------------------------------------------
@@ -48,11 +56,10 @@ agents should be consulted.
 Available agents (use exactly these keys):
   {agent_keys}
 
-IMPORTANT: For messages indicating a mental health crisis (suicidal
-ideation, self-harm, feelings of hopelessness), route ONLY to
-mental_health.
-
-Return ONLY a JSON object: {{"selected_agents": ["agent_key", ...]}}
+Return ONLY a JSON object:
+{{
+  "selected_agents": ["agent_key", ...]
+}}
 """
 
 
@@ -61,7 +68,7 @@ async def _select_agents(
     user_message: str,
     provider: LLMProvider,
 ) -> list[str]:
-    """Ask the LLM which 2-3 agents are relevant to this message."""
+    """Ask the LLM to select relevant agents for the user message."""
     user_content = (
         f"USER BLUEPRINT:\n{blueprint.model_dump_json(indent=2)}\n\n"
         f"USER MESSAGE:\n{user_message}"
@@ -71,8 +78,11 @@ async def _select_agents(
         user=user_content,
         response_format={"type": "json_object"},
     )
-    data: dict[str, Any] = json.loads(raw)
-    selected: list[str] = data.get("selected_agents", [])
+    data = _parse_json_object(raw)
+    selected = data.get("selected_agents", [])
+    if not isinstance(selected, list):
+        selected = []
+
     # Filter to known agents only
     return [a for a in selected if a in AGENT_REGISTRY]
 
@@ -105,23 +115,29 @@ async def _fan_out(
 
 _CONFLICT_SYSTEM = """\
 You are a conflict detection component inside a multi-agent longevity advisor.
-You will receive a set of agent responses. Identify whether there are genuine
-tensions between the agents' advice that require a trade-off discussion.
+You will receive a set of agent responses. Your PRIMARY job is to compare the
+actual advice each agent gave and determine whether following all of them
+together creates genuine tensions or trade-offs.
 
 A conflict exists when:
-- One agent's core recommendation works AGAINST another agent's core
-  recommendation (e.g., "rest more" vs "work extra hours to pay debt").
+- One agent's core recommendation directly CONTRADICTS or works AGAINST
+  another agent's core recommendation (e.g., "rest more" vs "work extra
+  hours to pay debt").
 - Following one agent's advice would require SACRIFICING a key benefit
   from another agent's advice (e.g., "buy the motorcycle for joy" vs
   "avoid the motorcycle for safety").
-- Agents' tradeoff flags explicitly reference concerns in each other's
-  domains.
+- The advice from different agents competes for the same limited
+  resource (time, money, energy) in ways the user cannot satisfy
+  simultaneously.
 
 A conflict does NOT exist when:
 - Agents give advice on different topics that can be followed together
   without tension.
 - One agent simply adds caveats or conditions to another's advice
   without fundamentally opposing it.
+
+Compare the substance of each agent's recommendation against every
+other agent's recommendation.
 
 Err on the side of flagging — it is better to surface a tension for
 review than to let a genuine conflict pass through unexamined.
@@ -142,14 +158,9 @@ async def _detect_conflicts(
     """Check whether agent responses contain cross-domain conflicts."""
     summaries = []
     for domain, resp in responses.items():
-        tradeoff_text = "; ".join(
-            f"[{f.severity}] {f.concern_area}: {f.description}"
-            for f in resp.tradeoff_flags
-        ) or "(none)"
         summaries.append(
             f"--- {domain} (confidence={resp.confidence}, urgency={resp.urgency}) ---\n"
-            f"Advice: {resp.advice}\n"
-            f"Tradeoff flags: {tradeoff_text}"
+            f"Advice: {resp.advice}"
         )
 
     raw = await provider.complete(
@@ -157,11 +168,14 @@ async def _detect_conflicts(
         user="\n\n".join(summaries),
         response_format={"type": "json_object"},
     )
-    data: dict[str, Any] = json.loads(raw)
+    data = _parse_json_object(raw)
+    implicated = data.get("implicated_agents", [])
+    if not isinstance(implicated, list):
+        implicated = []
     return (
         bool(data.get("conflict_detected", False)),
         str(data.get("conflict_summary", "")),
-        list(data.get("implicated_agents", [])),
+        [a for a in implicated if isinstance(a, str)],
     )
 
 
@@ -210,9 +224,6 @@ async def _run_critique_round(
 # ---------------------------------------------------------------------------
 
 
-def _has_crisis(responses: dict[str, AgentResponse]) -> bool:
-    return any(r.extensions.get("crisis_flag") is True for r in responses.values())
-
 _SYNTHESIS_TEMPLATE = """\
 You are the Future Self Synthesizer. You speak as the user's future self,
 looking back from 100+ years ahead with warmth, wisdom, and gentle urgency.
@@ -229,8 +240,6 @@ RULES:
 - Medium length: meaningful but not exhausting.
 - End with a question or gentle prompt to continue the conversation.
 
-{crisis_instruction}
-
 USER MESSAGE:
 {user_message}
 
@@ -243,22 +252,12 @@ CONFLICT INFO:
 
 
 async def _synthesise(
-    blueprint: UserBlueprint,
     user_message: str,
     responses: dict[str, AgentResponse],
     conflict_summary: str,
     provider: LLMProvider,
 ) -> str:
     """Produce the final user-facing reply in the Future Self persona."""
-    # Check for crisis
-    crisis_instruction = (
-        "CRITICAL: The user may be in a mental health crisis. "
-        "Respond with grounded compassion. Do NOT be dismissive or overly humorous. "
-        "Include a recommendation to reach out to a professional or crisis resource."
-        if _has_crisis(responses)
-        else ""
-    )
-
     memos = []
     for domain, resp in responses.items():
         memos.append(
@@ -272,7 +271,6 @@ async def _synthesise(
         user_message=user_message,
         advisor_memos="\n\n".join(memos),
         conflict_info=conflict_info,
-        crisis_instruction=crisis_instruction,
     )
 
     orchestrator_prompt = _load_orchestrator_prompt()
@@ -320,8 +318,10 @@ async def _extract_facts(
         user=user_content,
         response_format={"type": "json_object"},
     )
-    data: dict[str, Any] = json.loads(raw)
+    data = _parse_json_object(raw)
     new_facts: list[str] = data.get("new_facts", [])
+    if not isinstance(new_facts, list):
+        new_facts = []
 
     if not new_facts:
         return blueprint
@@ -359,6 +359,7 @@ async def run_turn(
 
     # 1. Select agents
     agent_keys = await _select_agents(user_blueprint, user_message, provider)
+
     if not agent_keys:
         # Fallback: at least consult mental_health for anything
         agent_keys = ["mental_health"]
@@ -366,45 +367,41 @@ async def run_turn(
     # 2. Fan-out
     initial_responses = await _fan_out(agent_keys, user_blueprint, user_message, provider)
 
-    # 3. Crisis short-circuit: skip conflict detection + critique
+    # 3. Conflict detection
+    conflict_detected, conflict_summary, implicated_agents = await _detect_conflicts(
+        initial_responses, provider
+    )
+
     refined_responses: dict[str, AgentResponse] = {}
-    conflict_detected = False
-    conflict_summary = ""
 
-    if not _has_crisis(initial_responses):
-        # 4. Conflict detection
-        conflict_detected, conflict_summary, implicated_agents = await _detect_conflicts(
-            initial_responses, provider
-        )
+    # 4. Critique rounds (only if conflict detected)
+    if conflict_detected and implicated_agents:
+        current_responses = dict(initial_responses)
+        for round_num in range(1, MAX_CRITIQUE_ROUNDS + 1):
+            round_refined = await _run_critique_round(
+                current_responses,
+                implicated_agents,
+                conflict_summary,
+                user_blueprint,
+                user_message,
+                provider,
+                round_num,
+            )
+            refined_responses.update(round_refined)
+            current_responses.update(round_refined)
 
-        # 5. Critique rounds (only if conflict detected)
-        if conflict_detected and implicated_agents:
-            current_responses = dict(initial_responses)
-            for round_num in range(1, MAX_CRITIQUE_ROUNDS + 1):
-                round_refined = await _run_critique_round(
-                    current_responses,
-                    implicated_agents,
-                    conflict_summary,
-                    user_blueprint,
-                    user_message,
-                    provider,
-                    round_num,
-                )
-                refined_responses.update(round_refined)
-                current_responses.update(round_refined)
-
-    # 6. Synthesise — use refined responses where available, initial otherwise
+    # 5. Synthesise — use refined responses where available, initial otherwise
     final_responses = dict(initial_responses)
     final_responses.update(refined_responses)
 
+    # 6. Extract facts concurrently with synthesis to keep user path responsive.
+    facts_task = asyncio.create_task(
+        _extract_facts(user_blueprint, user_message, final_responses, provider)
+    )
     user_facing_reply = await _synthesise(
-        user_blueprint, user_message, final_responses, conflict_summary, provider
+        user_message, final_responses, conflict_summary, provider
     )
-
-    # 7. Extract facts
-    updated_blueprint = await _extract_facts(
-        user_blueprint, user_message, final_responses, provider
-    )
+    updated_blueprint = await facts_task
 
     return OrchestratorResult(
         agents_consulted=agent_keys,

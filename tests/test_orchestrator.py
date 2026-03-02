@@ -15,7 +15,7 @@ from futureself.orchestrator import (
     _select_agents,
     run_turn,
 )
-from futureself.schemas import AgentResponse, OrchestratorResult, TradeoffFlag, UserBlueprint
+from futureself.schemas import AgentResponse, OrchestratorResult, UserBlueprint
 
 
 # ---------------------------------------------------------------------------
@@ -44,7 +44,6 @@ def _agent_json(domain: str, advice: str = "Test advice.", **extra) -> str:
         "confidence": 0.8,
         "domain": domain,
         "advice": advice,
-        "tradeoff_flags": [],
         "urgency": "low",
     }
     payload.update(extra)
@@ -77,6 +76,13 @@ async def test_select_agents_filters_unknown_keys(blank_blueprint):
     assert result == ["physical_health"]
 
 
+@pytest.mark.asyncio
+async def test_select_agents_invalid_json_falls_back_to_empty(blank_blueprint):
+    provider = _build_provider("not-json")
+    result = await _select_agents(blank_blueprint, "test", provider)
+    assert result == []
+
+
 # ---------------------------------------------------------------------------
 # 2. Fan-out
 # ---------------------------------------------------------------------------
@@ -105,13 +111,12 @@ async def test_conflict_detection_returns_tuple():
         "physical_health": AgentResponse(
             confidence=0.8, domain="physical_health",
             advice="Get a gym membership.",
-            tradeoff_flags=[TradeoffFlag("cost", "$200/month", "medium")],
             urgency="medium",
         ),
         "financial": AgentResponse(
             confidence=0.9, domain="financial",
             advice="Cut discretionary spending.",
-            tradeoff_flags=[], urgency="high",
+            urgency="high",
         ),
     }
     provider = _build_provider(
@@ -121,6 +126,23 @@ async def test_conflict_detection_returns_tuple():
     assert detected is True
     assert "gym" in summary.lower() or "budget" in summary.lower()
     assert "physical_health" in agents
+
+
+@pytest.mark.asyncio
+async def test_conflict_detection_invalid_json_falls_back_to_no_conflict():
+    responses = {
+        "physical_health": AgentResponse(
+            confidence=0.8,
+            domain="physical_health",
+            advice="Test",
+            urgency="low",
+        ),
+    }
+    provider = _build_provider("not-json")
+    detected, summary, agents = await _detect_conflicts(responses, provider)
+    assert detected is False
+    assert summary == ""
+    assert agents == []
 
 
 # ---------------------------------------------------------------------------
@@ -263,7 +285,7 @@ async def test_extract_facts_adds_new_facts():
     responses = {
         "physical_health": AgentResponse(
             confidence=0.8, domain="physical_health",
-            advice="test", tradeoff_flags=[], urgency="low",
+            advice="test", urgency="low",
         ),
     }
     provider = _build_provider(_facts_json(["new fact 1", "new fact 2"]))
@@ -281,7 +303,7 @@ async def test_extract_facts_deduplicates():
     responses = {
         "mental_health": AgentResponse(
             confidence=0.7, domain="mental_health",
-            advice="test", tradeoff_flags=[], urgency="low",
+            advice="test", urgency="low",
         ),
     }
     provider = _build_provider(_facts_json(["shared fact", "new fact"]))
@@ -297,13 +319,26 @@ async def test_extract_facts_empty_returns_same_blueprint():
     responses = {
         "physical_health": AgentResponse(
             confidence=0.8, domain="physical_health",
-            advice="test", tradeoff_flags=[], urgency="low",
+            advice="test", urgency="low",
         ),
     }
     provider = _build_provider(_facts_json([]))
     updated = await _extract_facts(bp, "test", responses, provider)
 
     assert updated is bp  # no copy needed when nothing new
+
+
+@pytest.mark.asyncio
+async def test_extract_facts_invalid_json_returns_same_blueprint():
+    bp = UserBlueprint(inferred_facts=["existing"])
+    responses = {
+        "physical_health": AgentResponse(
+            confidence=0.8, domain="physical_health", advice="test", urgency="low"
+        ),
+    }
+    provider = _build_provider("not-json")
+    updated = await _extract_facts(bp, "test", responses, provider)
+    assert updated is bp
 
 
 # ---------------------------------------------------------------------------
@@ -337,30 +372,3 @@ async def test_run_turn_merges_facts(blank_blueprint):
     assert len(result.updated_blueprint.inferred_facts) > 0
     assert any("healthier" in f for f in result.updated_blueprint.inferred_facts)
 
-
-# ---------------------------------------------------------------------------
-# 11. Crisis path: skip conflict detection, single agent
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_crisis_skips_conflict_detection(blank_blueprint):
-    """When crisis_flag is set, skip conflict detection and critique entirely."""
-    responses_in_order = [
-        # 1. selection — only mental_health
-        _selection_json(["mental_health"]),
-        # 2. fan-out — returns crisis_flag
-        _agent_json("mental_health", "Immediate support recommended.", urgency="critical", crisis_flag=True),
-        # 3. NO conflict detection — go straight to synthesis
-        "I need you to know: you matter. Please reach out to someone you trust...",
-        # 4. fact extraction
-        _facts_json(),
-    ]
-    provider = _build_provider(*responses_in_order)
-
-    result = await run_turn(blank_blueprint, "I feel hopeless.", provider=provider)
-
-    assert result.conflict_detected is False
-    assert result.refined_responses == {}
-    # selection(1) + fanout(1) + synthesis(1) + facts(1) = 4 calls (no conflict detection)
-    assert provider.complete.call_count == 4

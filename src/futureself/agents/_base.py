@@ -15,9 +15,34 @@ from pathlib import Path
 from typing import Any
 
 from futureself.llm.provider import LLMProvider
-from futureself.schemas import AgentResponse, CritiqueContext, TradeoffFlag, UserBlueprint
+from futureself.schemas import AgentResponse, CritiqueContext, UserBlueprint
 
 _PROMPTS_DIR = Path(__file__).parent.parent.parent.parent / "prompts"
+_ALLOWED_URGENCY = {"low", "medium", "high", "critical"}
+
+
+def _parse_json_object(raw: str) -> dict[str, Any]:
+    """Best-effort JSON object parser for model output."""
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _normalize_confidence(value: Any) -> float:
+    """Coerce confidence to float and clamp to [0.0, 1.0]."""
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return 0.5
+    return max(0.0, min(1.0, numeric))
+
+
+def _normalize_label(value: Any, allowed: set[str], default: str) -> str:
+    """Return normalized lower-case label constrained to an allowed set."""
+    normalized = str(value).strip().lower()
+    return normalized if normalized in allowed else default
 
 
 def build_user_context(
@@ -42,26 +67,16 @@ def build_user_context(
 
 def parse_response(raw: str, domain: str, is_refined: bool) -> AgentResponse:
     """Parse LLM JSON output into AgentResponse."""
-    data: dict[str, Any] = json.loads(raw)
+    data = _parse_json_object(raw)
 
-    tradeoff_flags = [
-        TradeoffFlag(
-            concern_area=str(f.get("concern_area", "")),
-            description=str(f.get("description", "")),
-            severity=f.get("severity", "low"),
-        )
-        for f in data.get("tradeoff_flags", [])
-    ]
-
-    base_keys = {"confidence", "domain", "advice", "tradeoff_flags", "urgency"}
+    base_keys = {"confidence", "domain", "advice", "urgency"}
     extensions = {k: v for k, v in data.items() if k not in base_keys}
 
     return AgentResponse(
-        confidence=float(data.get("confidence", 0.5)),
+        confidence=_normalize_confidence(data.get("confidence", 0.5)),
         domain=domain,
         advice=str(data.get("advice", "")),
-        tradeoff_flags=tradeoff_flags,
-        urgency=data.get("urgency", "low"),
+        urgency=_normalize_label(data.get("urgency", "low"), _ALLOWED_URGENCY, "low"),
         is_refined=is_refined,
         extensions=extensions,
     )

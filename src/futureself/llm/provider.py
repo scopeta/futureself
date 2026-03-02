@@ -41,12 +41,27 @@ class LLMProvider(ABC):
         ``"openai"``). Instantiates the corresponding concrete class.
         """
         provider_name = os.getenv("FUTURESELF_LLM_PROVIDER", "openai").lower()
+
         if provider_name == "openai":
             from futureself.llm.openai_provider import OpenAIProvider  # noqa: PLC0415
 
-            model = os.getenv("FUTURESELF_LLM_MODEL", "gpt-4o")
+            model = os.getenv("FUTURESELF_LLM_MODEL", "gpt-5-nano")
             return OpenAIProvider(model=model)
+
+        if provider_name in ("anthropic", "claude"):
+            from futureself.llm.anthropic_provider import AnthropicProvider  # noqa: PLC0415
+
+            model = os.getenv("FUTURESELF_LLM_MODEL", "claude-haiku-4-5-20251001")
+            return AnthropicProvider(model=model)
+
+        if provider_name in ("google", "gemini"):
+            from futureself.llm.google_provider import GoogleProvider  # noqa: PLC0415
+
+            model = os.getenv("FUTURESELF_LLM_MODEL", "gemini-2.0-flash")
+            return GoogleProvider(model=model)
+
         raise ValueError(
             f"Unknown LLM provider: {provider_name!r}. "
-            "Set FUTURESELF_LLM_PROVIDER to a supported value (e.g. 'openai')."
+            "Set FUTURESELF_LLM_PROVIDER to a supported value "
+            "('openai', 'anthropic', 'google')."
         )

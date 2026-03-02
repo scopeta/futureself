@@ -10,23 +10,13 @@ from typing import Literal
 
 
 @dataclass
-class TradeoffFlag:
-    """Side effect of this agent's own advice that falls outside its domain.
-    Uses plain language — never references other agents by name."""
-
-    concern_area: str               # e.g. "cost", "time commitment", "emotional stress"
-    description: str                # brief explanation of the side effect
-    severity: Literal["low", "medium", "high"]
-
-
-@dataclass
 class AgentResponse:
     confidence: float               # 0.0–1.0; reflect genuine uncertainty
     domain: str                     # snake_case domain name, e.g. "physical_health"
-    key_facts_extracted: list[str]  # new facts to merge into User Blueprint
     advice: str                     # internal memo to orchestrator, NOT user-addressed
-    tradeoff_flags: list[TradeoffFlag] = field(default_factory=list)
+    urgency: Literal["low", "medium", "high", "critical"]
     is_refined: bool = False        # True when produced during a critique round
+    extensions: dict = field(default_factory=dict)  # domain-specific extra fields
 ```
 
 ### Field rules
@@ -34,11 +24,11 @@ class AgentResponse:
 - **`advice`** — Internal memo. Never use second-person "you" addressing the
   user. The orchestrator synthesizes all advice into a single Future Self persona
   response.
-- **`tradeoff_flags`** — Plain-language concern areas only. Agents have zero
-  knowledge of other agents. Flag side effects of your *own* advice (e.g.,
-  "this supplement regimen costs ~$200/month").
 - **`is_refined`** — Must be `True` when the response was produced during a
   critique round (i.e., `critique_context` was provided).
+- **`extensions`** — Domain-specific extra fields (e.g., `contraindications`,
+  `proposed_schedule_change`). Captured from the prompt output without
+  modifying the base contract.
 
 ## CritiqueContext
 
@@ -129,13 +119,6 @@ async def test_critique_round_sets_is_refined():
     ctx = make_critique_context(concern_area="cost")
     response = await run(make_blueprint(), make_message(), critique_context=ctx)
     assert response.is_refined is True
-
-@pytest.mark.asyncio
-async def test_tradeoff_flags_use_plain_language():
-    response = await run(make_blueprint(), make_message())
-    for flag in response.tradeoff_flags:
-        assert "agent" not in flag.concern_area.lower()
-        assert "agent" not in flag.description.lower()
 ```
 
 ## Blueprint immutability

@@ -28,14 +28,12 @@ def _make_agent_json(
     advice: str = "Increase Zone 2 cardio to 150 minutes per week.",
     urgency: str = "low",
     confidence: float = 0.80,
-    tradeoffs: list | None = None,
     extra: dict | None = None,
 ) -> str:
     payload = {
         "confidence": confidence,
         "domain": domain,
         "advice": advice,
-        "tradeoff_flags": tradeoffs or [],
         "urgency": urgency,
     }
     if extra:

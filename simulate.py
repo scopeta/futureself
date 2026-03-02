@@ -15,7 +15,7 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
-load_dotenv()  # reads .env from the project root, if it exists
+load_dotenv(override=True)  # reads .env from the project root; overrides system env vars
 
 from futureself.orchestrator import run_turn
 from futureself.schemas import (

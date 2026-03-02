@@ -33,8 +33,8 @@ FutureSelf is a Supervisor-Worker multi-agent system for longevity guidance.
   - `urgency: str` ("low" | "medium" | "high" | "critical")
 - Domain-specific extensions (e.g., `crisis_flag`, `contraindications`,
   `proposed_schedule_change`) are allowed alongside the base fields.
-- Agents must flag tradeoff concerns in plain language when their advice
-  has side effects outside their domain.
+- The orchestrator is solely responsible for detecting conflicts between
+  agent recommendations. Agents focus on optimizing within their domain.
 - Tests go in `tests/` mirroring `src/`.
 
 ## Prompt File Conventions

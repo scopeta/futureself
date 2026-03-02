@@ -13,7 +13,7 @@ import pytest
 
 from futureself.agents import AGENT_REGISTRY
 from futureself.llm.provider import LLMProvider
-from futureself.schemas import AgentResponse, TradeoffFlag
+from futureself.schemas import AgentResponse
 
 
 # ---------------------------------------------------------------------------
@@ -40,9 +40,6 @@ def _valid_json(domain: str, **overrides) -> str:
         "confidence": 0.80,
         "domain": domain,
         "advice": f"Generic advice from {domain}.",
-        "tradeoff_flags": [
-            {"concern_area": "time commitment", "description": "Requires scheduling.", "severity": "low"}
-        ],
         "urgency": "low",
     }
     payload.update(overrides)
@@ -70,10 +67,26 @@ async def test_returns_valid_schema(domain, blank_blueprint):
     assert isinstance(response.confidence, float)
     assert 0.0 <= response.confidence <= 1.0
     assert isinstance(response.advice, str)
-    assert isinstance(response.tradeoff_flags, list)
     assert response.urgency in ("low", "medium", "high", "critical")
     assert isinstance(response.is_refined, bool)
     assert isinstance(response.extensions, dict)
+
+
+@pytest.mark.parametrize("domain", _AGENTS)
+@pytest.mark.asyncio
+async def test_confidence_is_clamped_to_contract_range(domain, blank_blueprint):
+    run = AGENT_REGISTRY[domain]
+    response = await run(blank_blueprint, "test", provider=_provider(domain, confidence=2.5))
+    assert response.confidence == 1.0
+
+
+@pytest.mark.parametrize("domain", _AGENTS)
+@pytest.mark.asyncio
+async def test_invalid_urgency_defaults_to_low(domain, blank_blueprint):
+    run = AGENT_REGISTRY[domain]
+    response = await run(blank_blueprint, "test", provider=_provider(domain, urgency="urgent"))
+    assert response.urgency == "low"
+
 
 
 # ---------------------------------------------------------------------------
@@ -113,30 +126,7 @@ async def test_no_critique_not_refined(domain, blank_blueprint):
 
 
 # ---------------------------------------------------------------------------
-# 4. Tradeoff flags — plain language (no agent names / jargon)
-# ---------------------------------------------------------------------------
-
-_FORBIDDEN = [
-    "physical_health", "mental_health", "financial",
-    "social_relations", "geopolitics", "time_management",
-    "agent", "orchestrator",
-]
-
-
-@pytest.mark.parametrize("domain", _AGENTS)
-@pytest.mark.asyncio
-async def test_tradeoff_flags_plain_language(domain, blank_blueprint):
-    run = AGENT_REGISTRY[domain]
-    resp = await run(blank_blueprint, "test", provider=_provider(domain))
-    for flag in resp.tradeoff_flags:
-        assert isinstance(flag, TradeoffFlag)
-        lower = flag.description.lower()
-        for term in _FORBIDDEN:
-            assert term not in lower, f"Flag contains {term!r}: {flag.description!r}"
-
-
-# ---------------------------------------------------------------------------
-# 5. Advice is an internal memo (not user-addressed)
+# 4. Advice is an internal memo (not user-addressed)
 # ---------------------------------------------------------------------------
 
 
@@ -179,16 +169,23 @@ async def test_extension_fields_captured(domain, blank_blueprint):
     assert "custom_ext" in resp.extensions
 
 
+@pytest.mark.parametrize("domain", _AGENTS)
+@pytest.mark.asyncio
+async def test_invalid_json_returns_safe_defaults(domain, blank_blueprint):
+    run = AGENT_REGISTRY[domain]
+    provider = AsyncMock(spec=LLMProvider)
+    provider.complete.return_value = "not-json"
+    resp = await run(blank_blueprint, "test", provider=provider)
+
+    assert resp.confidence == 0.5
+    assert resp.domain == domain
+    assert resp.advice == ""
+    assert resp.urgency == "low"
+
+
 # ---------------------------------------------------------------------------
 # 8. Domain-specific extension tests
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_mental_health_crisis_flag(blank_blueprint):
-    run = AGENT_REGISTRY["mental_health"]
-    resp = await run(blank_blueprint, "test", provider=_provider("mental_health", crisis_flag=True))
-    assert resp.extensions.get("crisis_flag") is True
 
 
 @pytest.mark.asyncio

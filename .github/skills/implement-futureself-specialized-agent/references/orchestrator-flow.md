@@ -10,12 +10,12 @@ lifecycle their output enters.
 User message
   → Orchestrator
       ├─ Phase 1: Parallel fan-out
-      │   → Agent A.run()  → AgentResponse (tradeoff: "cost: $200/mo")
-      │   → Agent B.run()  → AgentResponse (tradeoff: "time: 2hrs/day")
-      │   → Agent C.run()  → AgentResponse (no tradeoffs)
+      │   → Agent A.run()  → AgentResponse
+      │   → Agent B.run()  → AgentResponse
+      │   → Agent C.run()  → AgentResponse
       │
       ├─ Conflict detection (orchestrator's own LLM call)
-      │   Compares all responses + tradeoff_flags across domains.
+      │   Compares the substance of all agent advice across domains.
       │   Identifies tensions:
       │     "A's advice costs $200/mo; B's budget analysis says $50 max."
       │
@@ -38,9 +38,9 @@ User message
 1. **Agents never see each other's output directly.** The orchestrator controls
    what information flows into `CritiqueContext`.
 
-2. **Conflict detection is the orchestrator's job.** Agents only flag their own
-   tradeoffs via `tradeoff_flags` using plain language. They never name or
-   reference other agents.
+2. **Conflict detection is the orchestrator's job.** Agents optimize within
+   their domain. The orchestrator spots tensions by comparing the substance
+   of each agent's advice.
 
 3. **Critique rounds are optional.** Most responses go through Phase 1 only.
    Phase 2 triggers only when the orchestrator detects genuine tension.

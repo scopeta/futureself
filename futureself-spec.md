@@ -19,27 +19,41 @@
 
 ## 2. Application Architecture
 
-The system follows a **Supervisor-Worker** multi-agent pattern.
+The system follows a **Reactive Supervisor** pattern with an asynchronous memory loop.
 
 ```mermaid
-graph TD
-    User -->|Chat/Context| Supervisor[Future Self Synthesizer]
-    Supervisor -->|Delegates| Health[Physical Health Agent]
-    Supervisor -->|Delegates| Mental[Mental Health Agent]
-    Supervisor -->|Delegates| Finance[Financial Agent]
-    Supervisor -->|Delegates| Social[Social Relations Agent]
-    Supervisor -->|Delegates| Geo[Geopolitics Agent]
-    Supervisor -->|Delegates| Time[Time Management Agent]
+flowchart TD
+    %% Main Flow
+    User([User Message]) --> Router{Router & Crisis Check}
+
+    %% Normal Orchestration
+    Router -->|Normal Intent| FanOut[Fan-out to Selected Agents]
     
-    Health -->|Advice| Supervisor
-    Mental -->|Advice| Supervisor
-    Finance -->|Advice| Supervisor
-    Social -->|Advice| Supervisor
-    Geo -->|Advice| Supervisor
-    Time -->|Advice| Supervisor
+    subgraph Workers [Parallel Execution]
+        Health[Physical Health]
+        Mental[Mental Health]
+        Finance[Financial]
+        Social[Social Relations]
+        Geo[Geopolitics]
+        Time[Time Management]
+    end
+
+    FanOut --> Workers
+    Workers --> Raw[Initial Responses]
     
-    Supervisor -->|Synthesized Response| User
-  ```
+    Raw --> ConflictCheck{Conflict Detected?}
+    
+    %% Conflict Loop
+    ConflictCheck -->|Yes| Critique[Critique Round 1..N]
+    Critique -->|Refined Advice| Synthesis
+    ConflictCheck -->|No| Synthesis[Synthesize Persona Response]
+    
+    Synthesis --> Response
+
+    %% Async Memory Path (Non-blocking)
+    Response -.->|Async Context| Extractor[Fact Extractor]
+    Extractor --> DB[(User Blueprint & Vector DB)]
+```
 
 ---
 
@@ -51,8 +65,8 @@ graph TD
 - **Intelligence:** LLM-agnostic design (adaptable to OpenAI, Azure, Anthropic, or open-source models).
 - **Memory layers:**
   - *Short-term:* Conversation context.
-  - *Long-term:* Vector-based storage for user bio/history retrieval.
-- **Frontend:** Responsive web interface capable of real-time text streaming.
+  - *Long-term:* Vector-based storage containing both episodic memory (chat logs) and unstructured factual inferences about the user.
+- **Frontend:** Responsive web interface capable of real-time text streaming, and Whatsapp integration.
 
 ---
 
@@ -63,11 +77,12 @@ This section defines the personality, directives, and scope for each agent. Thes
 ### 4.1 Orchestrator: "The Future Self" (Synthesizer)
 **Role:** The persona the user actually talks to. It is the user, but older, wiser, and looking back with love.
 - **Tone:** Warm, wise, humorous, urgent but gentle. 1st person ("I remember when we...").
-- **Responsibilities:**
-  - Receive user input.
-  - Decide which "sub-agents" (aspects of self) to consult.
-  - Synthesize conflicting advice (e.g., "Health says gym, Mental says rest") into a coherent decision.
-  - Maintain the continuity of the persona.
+- **Dynamic Context:** Must ingest the real-world current timestamp and simulated future timestamp to anchor the "Future Self" continuity securely.
+- **Responsibilities (State Machine Workflows):**
+  - **Dynamic Routing:** Receive user input, use a lightweight LLM call to classify intent, and route to a subset of 1-3 relevant sub-agents.
+  - **Multi-Round Debate:** The orchestrator identifies conflicts by comparing the substance of agent advice. If tensions are found, it generates a `CritiqueContext` and prompts agents again to negotiate a compromise.
+  - **Synthesis:** Merge the validated sub-agent advice into a single, cohesive Future Self persona response.
+  - **Asynchronous Data Mutator:** The Orchestrator is the *sole* agent authorized to update the structured User Blueprint. To ensure low latency, Blueprint updates (and Vector DB insertions) execute asynchronously *after* streaming the chat response.
 
 ### 4.2 Physical Health Agent
 **Role:** The Biological Guardian.
@@ -105,15 +120,15 @@ This section defines the personality, directives, and scope for each agent. Thes
 
 The system relies on evolving "Knowledge State" rather than static database schemas at this stage.
 
-1.  **The User Blueprint:**
+1.  **The User Blueprint (Structured State):**
     *   Bio-data (Age, Metrics)
     *   Psych-data (Goals, Fears)
     *   Context (Location, Job, Family)
-2.  **Episodic Memory:**
-    *   Past conversations.
-    *   Key life events shared by the user.
-3.  **Inferred Insights:**
-    *   Agents must extract facts from chat to update the User Blueprint (e.g., User mentions "my knee hurts" -> Physical Agent updates health record).
+2.  **Episodic Memory (Unstructured Chat Vectors):**
+    *   Past conversations stored with timestamps.
+    *   Synthesized life events shared by the user.
+3.  **Inferred Insights (Unstructured Fact Vectors):**
+    *   The **Orchestrator** acts as the sole updater. Asynchronously, it extracts facts from the conversational context (e.g., User mentions "my knee hurts") to update both the structured Blueprint and unstructured vector fields without blocking the user interface.
 
 ---
 
@@ -134,11 +149,13 @@ We will build the intelligence before the interface.
 
 **Phase 3: The Data**
 - Implement user persistence (saving the state).
+- Include information about supplements that user currently takes, as well as history of biomarkers measurements
 - Implement logic to verify blueprint data quality and flag possible context drift.
 
 **Phase 4: The Interface**
 - Build an integration to Whatsup. This will be the main application interface where the user communicates with the orchestrator in this phase. Follow the orchestrater flow rules.
-- Build a simple Web UI for user to manage Blueprint and verifies data quality flags.
+- Build a simple Web UI for user to manage Blueprint and verify data quality flags. Enables upload of lab tests and exams. 
 
 **Phase 5: Feedback Loop**
-- Connect "Daily Check-in" inputs to agent memory.
+- Implement a proactive analysis and recommendation.
+- Capture daily check-ins

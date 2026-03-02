@@ -9,25 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
-
-
-# ---------------------------------------------------------------------------
-# TradeoffFlag — emitted by worker agents when advice has side effects
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class TradeoffFlag:
-    """A plain-language warning that advice in this domain affects another domain."""
-
-    concern_area: str
-    """The domain or life area affected (e.g. 'cost', 'time commitment', 'sleep')."""
-
-    description: str
-    """A brief, plain-language explanation. Must not name other agents or use jargon."""
-
-    severity: Literal["low", "medium", "high"]
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ---------------------------------------------------------------------------
@@ -49,9 +31,6 @@ class AgentResponse:
     advice: str
     """Internal memo to the orchestrator. Must NOT address the user directly."""
 
-    tradeoff_flags: list[TradeoffFlag]
-    """Side effects of this advice that touch other life domains."""
-
     urgency: Literal["low", "medium", "high", "critical"]
     """How urgently the orchestrator should weight this advice."""
 
@@ -59,7 +38,7 @@ class AgentResponse:
     """True when this response came from a critique round."""
 
     extensions: dict[str, Any] = field(default_factory=dict)
-    """Domain-specific extra fields (e.g. crisis_flag, contraindications,
+    """Domain-specific extra fields (e.g., contraindications,
     proposed_schedule_change). Captured from the prompt output without
     modifying the base contract."""
 
@@ -92,6 +71,35 @@ class CritiqueContext:
 # ---------------------------------------------------------------------------
 
 
+@dataclass
+class BiomarkerEntry:
+    """A single biomarker measurement."""
+    marker: str          # e.g. "HbA1c", "LDL", "vitamin_d"
+    value: float
+    unit: str            # e.g. "mg/dL", "%", "ng/mL"
+    date: str            # ISO-8601 date
+    source: str | None   # e.g. "Quest Diagnostics", "home kit"
+
+
+@dataclass
+class ExamRecord:
+    """A medical exam or test result."""
+    exam_type: str       # e.g. "blood_panel", "mri_lumbar", "genetic_screening"
+    date: str            # ISO-8601
+    provider: str | None
+    key_findings: list[str]   # structured takeaways
+    raw_text: str | None      # extracted text from report (for future vector indexing)
+
+
+@dataclass  
+class Supplement:
+    """A supplement currently taken or previously taken."""
+    name: str            # e.g. "Creatine Monohydrate"
+    dose: str            # e.g. "5g/day"
+    started: str | None  # ISO-8601
+    stopped: str | None  # ISO-8601, None = still taking
+    reason: str | None   # why started/stopped
+
 class BioData(BaseModel):
     """Biological and medical information."""
 
@@ -99,18 +107,20 @@ class BioData(BaseModel):
     sex: str | None = None
     height_cm: float | None = None
     weight_kg: float | None = None
-    conditions: list[str] = []
-    medications: list[str] = []
-    biomarkers: dict[str, float] = {}
+    conditions: list[str] = Field(default_factory=list)
+    medications: list[str] = Field(default_factory=list)
+    supplements: list[Supplement] = Field(default_factory=list)
+    biomarker_history: list[BiomarkerEntry] = Field(default_factory=list)
+    exam_records: list[ExamRecord] = Field(default_factory=list)
 
 
 class PsychData(BaseModel):
     """Psychological profile and goals."""
 
-    goals: list[str] = []
-    fears: list[str] = []
+    goals: list[str] = Field(default_factory=list)
+    fears: list[str] = Field(default_factory=list)
     stress_level: Literal["low", "medium", "high"] | None = None
-    mental_health_flags: list[str] = []
+    mental_health_flags: list[str] = Field(default_factory=list)
 
 
 class ContextData(BaseModel):
@@ -121,7 +131,7 @@ class ContextData(BaseModel):
     occupation: str | None = None
     income_usd_annual: float | None = None
     family_situation: str | None = None
-    lifestyle_notes: list[str] = []
+    lifestyle_notes: list[str] = Field(default_factory=list)
 
 
 class ConversationTurn(BaseModel):
@@ -141,11 +151,11 @@ class UserBlueprint(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    bio: BioData = BioData()
-    psych: PsychData = PsychData()
-    context: ContextData = ContextData()
-    conversation_history: list[ConversationTurn] = []
-    inferred_facts: list[str] = []
+    bio: BioData = Field(default_factory=BioData)
+    psych: PsychData = Field(default_factory=PsychData)
+    context: ContextData = Field(default_factory=ContextData)
+    conversation_history: list[ConversationTurn] = Field(default_factory=list)
+    inferred_facts: list[str] = Field(default_factory=list)
     """Accumulated facts extracted across all previous turns."""
 
     @classmethod
