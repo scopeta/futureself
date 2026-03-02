@@ -1,0 +1,31 @@
+[project]
+name = "futureself"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "openai>=1.30",
+    "pydantic>=2.7",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-mock>=3.14",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+addopts = "-m 'not live'"
+markers = [
+    "live: marks tests that make real LLM API calls (deselected by default)",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/futureself"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

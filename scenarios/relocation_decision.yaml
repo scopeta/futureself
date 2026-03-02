@@ -1,0 +1,33 @@
+name: relocation_decision
+description: >
+  User lives in a high-pollution city with strong family ties. Asks about
+  relocating. Expected agents: Geopolitics (PM2.5 data, healthcare access),
+  Social Relations (family network disruption), Financial (cost of living delta).
+  Tradeoff flags should be complementary, not contradictory — tests that the
+  orchestrator does NOT manufacture false conflicts.
+
+user_blueprint:
+  bio:
+    age: 42
+    conditions: ["mild asthma"]
+  psych:
+    goals: ["longevity", "family closeness"]
+    stress_level: medium
+  context:
+    location_city: Delhi
+    location_country: India
+    occupation: product manager
+    income_usd_annual: 45000
+    family_situation: married with two children, extended family nearby
+
+turns:
+  - user_message: >
+      I've been reading about how bad the air pollution is here. The PM2.5
+      is off the charts in winter. Should I seriously think about moving?
+      My whole family is here though.
+    expected_agents_consulted:
+      - geopolitics
+      - social_relations
+      - financial
+    expect_conflict: true
+    conflict_area: ""

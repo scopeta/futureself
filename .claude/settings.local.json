@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(where uv)",
+      "Bash(echo \"PATH: $PATH\")",
+      "Bash(cmd.exe /c \"where uv 2>nul && echo found || echo not found\")",
+      "Bash(powershell.exe -Command \"Get-Command uv -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source\")",
+      "Bash(cmd.exe /c \"where python\")",
+      "Bash(powershell.exe -ExecutionPolicy ByPass -Command \"irm https://astral.sh/uv/install.ps1 | iex\")",
+      "Bash(export PATH=\"/c/Users/scopetafabio/.local/bin:$PATH\")",
+      "Bash(uv --version)",
+      "Bash(uv sync --extra dev)",
+      "Bash(uv run python -c \"from futureself.schemas import UserBlueprint, AgentResponse, CritiqueContext, OrchestratorResult; print\\(''schemas OK''\\)\")",
+      "Bash(uv run python -c \"from futureself.llm.provider import LLMProvider; from futureself.llm.openai_provider import OpenAIProvider; print\\(''LLM abstraction OK''\\)\")",
+      "Bash(uv run pytest tests/agents/test_physical_health.py -v)",
+      "Bash(uv run pytest tests/agents/ -v)",
+      "Bash(uv run python -c \"from futureself.agents import AGENT_REGISTRY; print\\(sorted\\(AGENT_REGISTRY.keys\\(\\)\\)\\)\")",
+      "Bash(uv run pytest tests/test_orchestrator.py -v)",
+      "Bash(uv run python simulate.py --list)",
+      "Bash(uv run pytest tests/ -v)",
+      "Bash(uv run python simulate.py --scenario exercise_no_time --verbose)",
+      "Bash(uv add python-dotenv)",
+      "Bash(python -c \":*)",
+      "Bash(python -:*)",
+      "Bash(uv run pytest tests/agents/ tests/test_orchestrator.py -q)"
+    ]
+  }
+}

@@ -1,0 +1,32 @@
+name: exercise_no_time
+description: >
+  User is a parent who says they have no time for exercise.
+  Expected happy path: Physical Health (exercise prescription) +
+  Time Management (schedule analysis) should agree on the goal.
+  Tests that the orchestrator does not manufacture conflicts when
+  agents are aligned.
+
+user_blueprint:
+  bio:
+    age: 38
+    conditions: []
+  psych:
+    goals: ["be healthy for my kids", "feel energetic"]
+    stress_level: medium
+  context:
+    occupation: teacher
+    income_usd_annual: 55000
+    family_situation: married with two young children (ages 3 and 6)
+    lifestyle_notes:
+      - "2 hours of TV most evenings"
+      - "commutes 30 min each way"
+
+turns:
+  - user_message: >
+      I know I should exercise more but I genuinely have no time.
+      Every minute is accounted for between work, the kids, and the house.
+    expected_agents_consulted:
+      - physical_health
+      - time_management
+    expect_conflict: false
+    conflict_area: ""
