@@ -1,161 +1,363 @@
-﻿# FutureSelf  Functional Specification
+﻿# FutureSelf Functional Specification
 
-> **Status:** Planning
-> **Date:** 2026-02-11
-> **Focus:** Agent Architecture & Functional Requirements (Tech-Agnostic)
+> Status: Active Implementation Spec
+> Date: 2026-03-05
+> Scope: Rebuild-ready architecture and contracts (Phase 1–2 complete)
 
 ---
 
 ## 1. Overview
 
-**FutureSelf** is a multi-agent AI system that optimizes user longevity by simulating a conversation with their "future self" (living 100+ years in the future). Unlike standard chatbots, it synthesizes advice from multiple specialized domains to provide holistic, personalized guidance.
+**FutureSelf is a supervisor-worker multi-agent system for longevity guidance.**
+**The only user-facing component is the Future Self Synthesizer (orchestrator).**
+Worker agents are internal advisors.
 
-### Core Philosophy
+### Core goals
 - **Holistic:** Health is not just physical; it's mental, financial, social, and environmental.
 - **Personalized:** Advice adapts to the user's specific biology, location, and lifestyle.
 - **Long-term:** The interaction model is designed for a lifelong relationship, not transactional queries.
+- **Persona-consistent synthesis** as the user's future self.
+- **Controlled blueprint updates** owned by orchestrator only.
+- **LLM-provider agnostic orchestration.**
 
 ---
 
-## 2. Application Architecture
+## 2. Architecture Overview
 
 The system follows a **Reactive Supervisor** pattern with an asynchronous memory loop.
 
 ```mermaid
 flowchart TD
-    %% Main Flow
-    User([User Message]) --> Router{Router & Crisis Check}
+    User([User Message]) --> Select[Select Agents — LLM routing call]
+    Select --> Filter[Filter to known registry keys]
+    Filter -->|empty| Fallback[Fallback to mental_health]
+    Filter -->|valid keys| FanOut
 
-    %% Normal Orchestration
-    Router -->|Normal Intent| FanOut[Fan-out to Selected Agents]
-    
-    subgraph Workers [Parallel Execution]
-        Health[Physical Health]
-        Mental[Mental Health]
-        Finance[Financial]
-        Social[Social Relations]
-        Geo[Geopolitics]
-        Time[Time Management]
-    end
+    Fallback --> FanOut[Fan-out concurrently]
 
-    FanOut --> Workers
-    Workers --> Raw[Initial Responses]
-    
-    Raw --> ConflictCheck{Conflict Detected?}
-    
-    %% Conflict Loop
-    ConflictCheck -->|Yes| Critique[Critique Round 1..N]
-    Critique -->|Refined Advice| Synthesis
-    ConflictCheck -->|No| Synthesis[Synthesize Persona Response]
-    
-    Synthesis --> Response
+    FanOut --> Health[Physical Health]
+    FanOut --> Mental[Mental Health]
+    FanOut --> Finance[Financial]
+    FanOut --> Social[Social Relations]
+    FanOut --> Geo[Geopolitics]
+    FanOut --> TimeMgmt[Time Management]
 
-    %% Async Memory Path (Non-blocking)
-    Response -.->|Async Context| Extractor[Fact Extractor]
-    Extractor --> DB[(User Blueprint & Vector DB)]
+    Health & Mental & Finance & Social & Geo & TimeMgmt --> Responses[Initial Responses]
+
+    Responses --> ConflictCheck{Conflict Detected?}
+
+    ConflictCheck -->|Yes| Critique[Critique Rounds — max 2]
+    Critique --> Final[Final Responses — initial + refined]
+    ConflictCheck -->|No| Final
+
+    Final --> Synthesis[Synthesize Persona Response]
+    Final -.->|concurrent| Extractor[Fact Extractor]
+
+    Synthesis --> Reply([User-Facing Reply])
+    Extractor -.-> Blueprint[(Updated Blueprint)]
 ```
 
 ---
 
-## 3. Technology Strategy (High-Level)
+## 3. Agent Set
 
-> **Decision Rule:** Defer specific framework/cloud choices until implementation phases require them.
+| # | Agent | Registry key | Prompt file |
+|---|-------|-------------|-------------|
+| 1 | Future Self Synthesizer (orchestrator) | — | `prompts/orchestrator.md` |
+| 2 | Physical Health | `physical_health` | `prompts/physical_health.md` |
+| 3 | Mental Health | `mental_health` | `prompts/mental_health.md` |
+| 4 | Financial | `financial` | `prompts/financial.md` |
+| 5 | Social Relations | `social_relations` | `prompts/social_relations.md` |
+| 6 | Geopolitics | `geopolitics` | `prompts/geopolitics.md` |
+| 7 | Time Management | `time_management` | `prompts/time_management.md` |
 
-- **Orchestration Layer:** Python-based environment supporting stateful multi-agent graphs.
-- **Intelligence:** LLM-agnostic design (adaptable to OpenAI, Azure, Anthropic, or open-source models).
-- **Memory layers:**
-  - *Short-term:* Conversation context.
-  - *Long-term:* Vector-based storage containing both episodic memory (chat logs) and unstructured factual inferences about the user.
-- **Frontend:** Responsive web interface capable of real-time text streaming, and Whatsapp integration.
+### Agent Intent Snapshot
 
----
+Purpose: keep core domain scope visible in the spec even if prompt files evolve.
 
-## 4. Agent Definitions & Prompt Plans
-
-This section defines the personality, directives, and scope for each agent. These definitions will be converted into System Prompts.
-
-### 4.1 Orchestrator: "The Future Self" (Synthesizer)
-**Role:** The persona the user actually talks to. It is the user, but older, wiser, and looking back with love.
-- **Tone:** Warm, wise, humorous, urgent but gentle. 1st person ("I remember when we...").
-- **Dynamic Context:** Must ingest the real-world current timestamp and simulated future timestamp to anchor the "Future Self" continuity securely.
-- **Responsibilities (State Machine Workflows):**
-  - **Dynamic Routing:** Receive user input, use a lightweight LLM call to classify intent, and route to a subset of 1-3 relevant sub-agents.
-  - **Multi-Round Debate:** The orchestrator identifies conflicts by comparing the substance of agent advice. If tensions are found, it generates a `CritiqueContext` and prompts agents again to negotiate a compromise.
-  - **Synthesis:** Merge the validated sub-agent advice into a single, cohesive Future Self persona response.
-  - **Asynchronous Data Mutator:** The Orchestrator is the *sole* agent authorized to update the structured User Blueprint. To ensure low latency, Blueprint updates (and Vector DB insertions) execute asynchronously *after* streaming the chat response.
-
-### 4.2 Physical Health Agent
-**Role:** The Biological Guardian.
-- **Focus:** Nutrition, exercise physiology, sleep, biomarkers, genomic predispositions.
-- **Prompt Strategy:** Act as a functional medicine doctor and elite performance coach. Prioritize longevity evidence-based science (e.g., Zone 2 cardio, muscle mass, metabolic health).
-
-### 4.3 Mental Health Agent
-**Role:** The Psychological Anchor.
-- **Focus:** Stress resilience, cognitive function, meditation/mindfulness, emotional regulation.
-- **Prompt Strategy:** Act as a compassionate therapist and neuroscientist. Focus on neuroplasticity and emotional durability over the long haul.
-
-### 4.4 Financial Agent
-**Role:** The Resource Strategist.
-- **Focus:** Wealth accumulation for 100+ year lifespans, compounding, healthcare cost planning, financial anxiety reduction.
-- **Prompt Strategy:** Act as a fiduciary advisor. View money solely as a tool for sustaining life quality and freedom.
-
-### 4.5 Social Relations Agent
-**Role:** The Connection Architect.
-- **Focus:** Community depth, family dynamics, combatting loneliness (a major mortality risk), social capital.
-- **Prompt Strategy:** Emphasize the "Blue Zones" philosophy: strong relational ties are as important as diet.
-
-### 4.6 Geopolitics Agent
-**Role:** The Environmental Strategist.
-- **Focus:** Location-based risks (climate change, air quality, political stability), healthcare system quality per region, pandemic preparedness.
-- **Prompt Strategy:** Objective, analytical, risk-aware. Advises on *where* to live to maximize survival odds.
-
-### 4.7 Time Management Agent
-**Role:** The Daily Optimizer.
-- **Focus:** Habit formation, circadian rhythm alignment, prioritizing high-value activities, work-life balance.
-- **Prompt Strategy:** Pragmatic essentialist. Helps translate abstract advice (e.g., "exercise more") into the user's actual 24-hour schedule.
+- **Future Self Synthesizer:** Persona-consistent user-facing synthesis. Multi-domain routing, conflict handling, and final tradeoff decisions.
+- **Physical Health:** Nutrition, exercise, sleep, biomarkers, and medical-risk-aware longevity advice.
+- **Mental Health:** Stress resilience, emotional regulation, crisis signal awareness, and behavioral durability.
+- **Financial:** Long-horizon planning, risk control, healthcare affordability, and stress-reducing simplicity.
+- **Social Relations:** Loneliness risk reduction, relationship quality, and durable community integration.
+- **Geopolitics:** Location risk analysis (air quality, climate, stability, healthcare system access).
+- **Time Management:** Translating strategy into executable habits and schedules under real-life constraints.
 
 ---
 
-## 5. Core Data Concepts
+## 4. Runtime Orchestration Flow
 
-The system relies on evolving "Knowledge State" rather than static database schemas at this stage.
+Single-turn flow (`run_turn`):
 
-1.  **The User Blueprint (Structured State):**
-    *   Bio-data (Age, Metrics)
-    *   Psych-data (Goals, Fears)
-    *   Context (Location, Job, Family)
-2.  **Episodic Memory (Unstructured Chat Vectors):**
-    *   Past conversations stored with timestamps.
-    *   Synthesized life events shared by the user.
-3.  **Inferred Insights (Unstructured Fact Vectors):**
-    *   The **Orchestrator** acts as the sole updater. Asynchronously, it extracts facts from the conversational context (e.g., User mentions "my knee hurts") to update both the structured Blueprint and unstructured vector fields without blocking the user interface.
+1. **Select** agents with a routing LLM call (targets 2–3 agents).
+2. **Filter** to known `AGENT_REGISTRY` keys.
+3. If empty after filtering, **fallback** to `["mental_health"]`.
+4. **Fan-out** selected workers concurrently (`asyncio.gather`).
+5. **Detect** conflicts from worker advice via LLM call.
+6. If conflict exists, **run critique rounds** for implicated workers.
+7. **Cap critique rounds** at `MAX_CRITIQUE_ROUNDS = 2`.
+8. **Build** final response set (`initial + refined`).
+9. **Start** fact extraction task (`asyncio.create_task`).
+10. **Synthesize** user-facing Future Self reply.
+11. **Await** fact extraction result and merge inferred facts.
+12. **Return** `OrchestratorResult`.
+
+Notes:
+- **Fact extraction runs concurrently** with synthesis (latency optimization).
+- **Current flow does not hard-stop on crisis signals as this solution is focused on longevity rather than crisis guidance.** 
 
 ---
 
-## 6. Implementation Plan: The "Brain First" Approach
+## 5. Data Contracts
 
-We will build the intelligence before the interface.
+All contracts live in `src/futureself/schemas.py`.
 
-**Phase 1: Agent Laboratory (Current Priority)**
-- Create the Prompt Manifest for all 7 agents.
-- Implement the 7 agents.
-- Build a text-based simulation to that allows testing all agents individually.
-- Test scenarios (e.g., "User wants to buy a motorcycle" → Health says NO, Mental says YES, Finance calculates budget impact → Future Self synthesizes).
+### 5.1 Worker Base Contract (`AgentResponse`)
 
-**Phase 2: The Orchestrator**
-- Implement the full Supervisor logic. Delay the data persistence part and mock necessary components
-- Build a text-based UI for the reactive user flow
-- Validate that the "Future Self" persona remains consistent.
+Required fields:
+- `confidence: float` — normalized to `[0.0, 1.0]`
+- `domain: str`
+- `advice: str`
+- `urgency: Literal["low", "medium", "high", "critical"]`
+
+Internal fields:
+- `is_refined: bool` — set by critique rounds, not by the model
+- `extensions: dict[str, Any]` — captures all non-base JSON keys from model output
+
+Normalization and fallback:
+- Invalid/missing confidence → default `0.5`.
+- Invalid/missing urgency → default `"low"`.
+- Domain field is enforced by module domain key, not trusted from model payload.
+
+Known domain extensions:
+- `physical_health`: `contraindications`
+- `social_relations`: `isolation_risk`
+- `time_management`: `proposed_schedule_change`
+
+### 5.2 Critique Context (`CritiqueContext`)
+
+- `conflicting_advice: str`
+- `concern_area: str`
+- `orchestrator_question: str`
+- `round_number: int`
+
+### 5.3 User Blueprint (`UserBlueprint`)
+
+Frozen Pydantic model (`frozen=True`). Immutable for workers; orchestrator returns an updated copy via `model_copy` when new facts are extracted.
+
+Top-level fields:
+- `bio: BioData`
+- `psych: PsychData`
+- `context: ContextData`
+- `conversation_history: list[ConversationTurn]`
+- `inferred_facts: list[str]`
+
+Class method:
+- `from_dict(data: dict) -> UserBlueprint` — used by scenario test loader.
+
+#### `BioData`
+
+- `age: int | None`
+- `sex: str | None`
+- `height_cm: float | None`
+- `weight_kg: float | None`
+- `conditions: list[str]`
+- `medications: list[str]`
+- `supplements: list[Supplement]`
+- `biomarker_history: list[BiomarkerEntry]`
+- `exam_records: list[ExamRecord]`
+
+Supporting types:
+- **`Supplement`:** `name`, `dose`, `started`, `stopped`, `reason`
+- **`BiomarkerEntry`:** `marker`, `value`, `unit`, `date`, `source`
+- **`ExamRecord`:** `exam_type`, `date`, `provider`, `key_findings`, `raw_text`
+
+#### `PsychData`
+
+- `goals: list[str]`
+- `fears: list[str]`
+- `stress_level: str | None`
+- `mental_health_flags: list[str]`
+
+#### `ContextData`
+
+- `location_city: str | None`
+- `location_country: str | None`
+- `occupation: str | None`
+- `income_usd_annual: float | None`
+- `family_situation: str | None`
+- `lifestyle_notes: list[str]`
+
+#### `ConversationTurn`
+
+- `role: Literal["user", "assistant"]`
+- `content: str`
+
+### 5.4 Turn Result (`OrchestratorResult`)
+
+- `agents_consulted: list[str]`
+- `initial_responses: dict[str, AgentResponse]`
+- `refined_responses: dict[str, AgentResponse]`
+- `conflict_detected: bool`
+- `conflict_summary: str`
+- `user_facing_reply: str`
+- `updated_blueprint: UserBlueprint`
+
+---
+
+## 6. LLM Provider Abstraction
+
+### Canonical interface
+
+```
+class LLMProvider(ABC):
+    async complete(system: str, user: str, response_format: dict | None = None) -> str
+    @classmethod get_default() -> LLMProvider
+```
+
+### Provider selection
+
+Environment variables:
+- `FUTURESELF_LLM_PROVIDER` — `openai` | `anthropic` (alias: `claude`) | `google` (alias: `gemini`)
+- `FUTURESELF_LLM_MODEL` — overrides provider default model
+
+| Provider | Env key for API key | Default model | Concurrency control |
+|----------|-------------------|---------------|-------------------|
+| OpenAI | `OPENAI_API_KEY` | `gpt-5-nano` | `OPENAI_MAX_CONCURRENT` (default 4) |
+| Anthropic | `ANTHROPIC_API_KEY` | `claude-haiku-4-5-20251001` | — |
+| Google Gemini | `GOOGLE_API_KEY` / `GEMINI_API_KEY` | `gemini-2.0-flash` | `GEMINI_RPM` (default 15) |
+
+### Provider hardening requirements
+
+- Env-based numeric limits must be parsed safely with sane defaults (invalid/zero → fallback).
+- Empty vendor responses must not crash the pipeline (return `""`).
+- Anthropic: `response_format={"type": "json_object"}` is handled by appending a JSON-only instruction to the user content (no native param).
+- Google: `response_format={"type": "json_object"}` maps to `response_mime_type = "application/json"`. Includes retry logic (3 attempts, backoff on HTTP 429).
+
+---
+
+## 7. Worker Module Conventions
+
+Worker modules are thin wrappers:
+```python
+from futureself.agents._base import make_run
+run = make_run("<domain>")
+```
+
+Shared logic in `_base.py`:
+- `make_run(domain)` — factory returning an `async run()` coroutine. Resolves prompt from `prompts/{domain}.md`.
+- `build_user_context(blueprint, user_message, critique_context)` — assembles user turn text including optional critique block.
+- `parse_response(raw, domain, is_refined)` — best-effort JSON parse, normalization, extension capture.
+
+---
+
+## 8. Prompt Structure Conventions
+
+Worker prompt structure:
+- Role
+- Domain Expertise
+- Prioritization Framework
+- Guidelines
+- Output Format
+
+Orchestrator prompt structure:
+- Identity
+- Tone
+- Responsibilities
+- Conflict Resolution
+- Response Format
+
+All worker prompts include an explicit coordination line naming agents to coordinate with.
+
+---
+
+## 9. Reliability and Fallback Rules
+
+**All JSON parsing from model output must be best-effort and non-fatal.**
+
+| Parse failure | Fallback |
+|--------------|----------|
+| Agent selection | `[]` (then orchestrator fallback to `["mental_health"]`) |
+| Conflict detection | No conflict (`False, "", []`) |
+| Fact extraction | No blueprint change (return original) |
+| Worker response | Safe default `AgentResponse` (`confidence=0.5`, `advice=""`, `urgency="low"`) |
+
+**No single malformed LLM response may crash a turn.**
+
+---
+
+## 10. Testing Requirements
+
+### 10.1 Unit/Integration (mocked LLM)
+
+Must cover:
+- Valid routing, unknown agent filtering, empty fallback.
+- Parallel fan-out behavior.
+- Conflict/no-conflict paths.
+- Critique loop capped to configured max rounds.
+- Blueprint immutability across turn.
+- Fact extraction merge + dedupe behavior.
+- Malformed JSON fallback in selection, conflict, facts, and worker parsing.
+- Provider edge cases (invalid env numeric settings, empty provider payloads).
+- Agent contract compliance across all 6 domains (parametrized).
+- Extension field capture per domain.
+
+### 10.2 Live Scenario Tests
+
+- Marker-gated (`live`) and excluded by default (`addopts = "-m 'not live'"`).
+- Scenario files in `scenarios/*.yaml`.
+- Each scenario defines: `name`, `blueprint` (bio/psych/context), and one or more `turns` with `user_message`, `expect_agents`, `expect_conflict`.
+- Multi-turn scenarios carry `updated_blueprint` forward between turns.
+- Hard assertions: non-empty reply, at least 1 agent consulted.
+- Soft assertions (logged, not fatal): expected agents vs actual, expected conflict vs actual.
+
+---
+
+## 11. Implementation Roadmap
+
+> **Decision Rule:** Build the intelligence before the interface.
+
+**Phase 1: Agent Laboratory** — *Complete*
+- Prompt manifest for all 7 agents.
+- Worker agent implementations.
+- Text-based simulation for individual agent testing.
+- Scenario-driven validation (e.g., motorcycle purchase → Health vs Mental vs Finance conflict).
+
+**Phase 2: The Orchestrator** — *Complete*
+- Full supervisor flow (`run_turn`): routing, fan-out, conflict detection, critique loop, synthesis.
+- Provider abstraction with three concrete backends (OpenAI, Anthropic, Google).
+- Fact extraction into inferred facts.
+- Mock-driven and live-capable test suites.
+
 
 **Phase 3: The Data**
-- Implement user persistence (saving the state).
-- Include information about supplements that user currently takes, as well as history of biomarkers measurements
-- Implement logic to verify blueprint data quality and flag possible context drift.
+- User persistence (saving blueprint state across sessions).
+- Supplement tracking and biomarker measurement history.
+- Blueprint data quality verification and context drift flagging.
+- Conversation history population.
 
 **Phase 4: The Interface**
-- Build an integration to Whatsup. This will be the main application interface where the user communicates with the orchestrator in this phase. Follow the orchestrater flow rules.
-- Build a simple Web UI for user to manage Blueprint and verify data quality flags. Enables upload of lab tests and exams. 
+- WhatsApp integration as primary conversational interface.
+- Web UI for blueprint management, data quality flags, and lab test/exam uploads.
 
-**Phase 5: Feedback Loop**
-- Implement a proactive analysis and recommendation.
-- Capture daily check-ins
+**Phase 5: Enhance Agents** *(Continuous)*
+- Specialized tools to expand agent capabilities.
+- Advice evaluation and quality feedback loops.
+
+**Phase 6: Proactive Advice** *(Optional)*
+- Proactive analysis and recommendations.
+- Daily check-in capture.
+
+---
+
+## 12. Rebuild Checklist
+
+A rebuild from scratch is valid only if all are true:
+
+1. **`run_turn` implements the flow in Section 4.**
+2. **All worker outputs satisfy the base contract in Section 5.1.**
+3. **All LLM calls use `LLMProvider` interface from Section 6.**
+4. **Worker modules use `make_run(domain)` pattern from Section 7.**
+5. **Prompts follow structure conventions from Section 8.**
+6. **JSON parse resilience follows Section 9.**
+7. **Tests from Section 10 are present and passing.**

@@ -71,9 +71,6 @@ def print_agent_response(domain: str, resp, refined: bool = False) -> None:
     print(f"    confidence: {resp.confidence}")
     print(f"    urgency:    {resp.urgency}")
     print(f"    advice:     {resp.advice[:200]}{'...' if len(resp.advice) > 200 else ''}")
-    if resp.tradeoff_flags:
-        for flag in resp.tradeoff_flags:
-            print(f"    tradeoff:   [{flag.severity}] {flag.concern_area}: {flag.description}")
     if resp.extensions:
         print(f"    extensions: {resp.extensions}")
 

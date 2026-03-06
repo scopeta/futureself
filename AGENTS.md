@@ -3,6 +3,14 @@
 ## Project Overview
 FutureSelf is a Supervisor-Worker multi-agent system for longevity guidance.
 
+## Source of Truth Precedence
+
+When rebuilding or refactoring, resolve conflicts in this order:
+
+1. **`AGENTS.md`** for governance, constraints, and coding standards.
+2. **`futureself-spec.md`** for runtime architecture, data contracts, and rebuild checklist.
+3. **`prompts/*.md`** for role behavior, tone, and domain reasoning.
+
 ## Non-Negotiable Architecture Rules
 - The **Future Self Synthesizer** is the only user-facing agent.
 - Sub-agents never communicate peer-to-peer; all traffic goes through orchestrator.
@@ -10,7 +18,7 @@ FutureSelf is a Supervisor-Worker multi-agent system for longevity guidance.
 - Use two memory tiers:
   - short-term conversation context
   - long-term vector retrieval for User Blueprint
-- Implement the solution minimizing architecture and codebase complexity, even if it means performing deep refactoring. 
+- Implement the solution minimizing architecture and codebase complexity, even if it means performing deep refactoring.
 
 ## Agent Set (7)
 1. Future Self Synthesizer (orchestrator) → `prompts/orchestrator.md`
@@ -25,41 +33,38 @@ FutureSelf is a Supervisor-Worker multi-agent system for longevity guidance.
 - Use Python modules per agent.
 - Load each system prompt from `prompts/`.
 - Public functions require type hints and docstrings.
-- Shared User Blueprint mutations must be controlled.
-- Agent responses must include the **base contract**:
+- Shared User Blueprint mutations must be controlled (orchestrator only).
+- All LLM traffic must go through `LLMProvider`.
+- Agent responses must include the **base contract** (see `futureself-spec.md` Section 5.1 for full details):
   - `confidence: float` (0.0–1.0)
   - `domain: str`
   - `advice: str`
   - `urgency: str` ("low" | "medium" | "high" | "critical")
-- Domain-specific extensions (e.g., `crisis_flag`, `contraindications`,
-  `proposed_schedule_change`) are allowed alongside the base fields.
-- The orchestrator is solely responsible for detecting conflicts between
-  agent recommendations. Agents focus on optimizing within their domain.
+- Domain-specific extensions are allowed alongside the base fields.
+- Invalid or malformed model JSON must never crash a turn. Parsing must degrade gracefully to safe defaults.
 - Tests go in `tests/` mirroring `src/`.
 
 ## Prompt File Conventions
-- Each prompt file in `prompts/` is plain Markdown, loadable directly as a
-  system prompt.
+- Each prompt file in `prompts/` is plain Markdown, loadable directly as a system prompt.
 - Worker prompts follow a consistent structure:
   **Role → Domain Expertise → Prioritization Framework → Guidelines → Output Format**
-- The orchestrator prompt has its own structure (Identity, Tone, Responsibilities,
-  Conflict Resolution, Response Format).
-- All worker prompts must include an explicit coordination line naming which
-  other agents to coordinate with through the orchestrator.
+- The orchestrator prompt has its own structure (Identity, Tone, Responsibilities, Conflict Resolution, Response Format).
+- All worker prompts must include an explicit coordination line naming which other agents to coordinate with through the orchestrator.
 
 ## Current Phase
-Phase 2: The Orchestrator.
+Phase 2 (Orchestrator) complete. Next: Phase 3 (Data).
 
 ## Explicit Do-Not-Do
-- No frontend work before Phase 3.
+- No frontend work before Phase 4.
 - No hard dependency on a specific vector DB/cloud provider.
 - No sub-agent direct user addressing.
 - No orchestrator bypass.
 
 ## Key Files
-- `futureself-spec.md`
-- `prompts/`
-- `tests/`
+- `futureself-spec.md` — runtime architecture, contracts, rebuild checklist
+- `prompts/` — agent system prompts
+- `tests/` — test suite mirroring `src/`
+- `scenarios/` — live test YAML scenarios
 
 ## CI/CD
 - **`ci.yml`** — runs on every push/PR to `main`: installs deps, runs `pytest tests/ -v`.
