@@ -16,6 +16,7 @@ from typing import Any
 
 from futureself.llm.provider import LLMProvider
 from futureself.schemas import AgentResponse, CritiqueContext, UserBlueprint
+from futureself.telemetry import set_span_attributes, span
 
 _PROMPTS_DIR = Path(__file__).parent.parent.parent.parent / "prompts"
 _ALLOWED_URGENCY = {"low", "medium", "high", "critical"}
@@ -105,12 +106,21 @@ def make_run(
         if provider is None:
             provider = LLMProvider.get_default()
 
-        raw = await provider.complete(
-            system=_load_prompt(),
-            user=build_user_context(user_blueprint, user_message, critique_context),
-            response_format={"type": "json_object"},
-        )
-        return parse_response(raw, domain, is_refined=critique_context is not None)
+        with span(f"agent.{domain}.run", {
+            "agent.domain": domain,
+            "agent.is_critique": critique_context is not None,
+        }) as s:
+            raw = await provider.complete(
+                system=_load_prompt(),
+                user=build_user_context(user_blueprint, user_message, critique_context),
+                response_format={"type": "json_object"},
+            )
+            response = parse_response(raw, domain, is_refined=critique_context is not None)
+            set_span_attributes(s, {
+                "agent.confidence": response.confidence,
+                "agent.urgency": response.urgency,
+            })
+        return response
 
     run.__doc__ = f"Run the {domain} agent."
     return run

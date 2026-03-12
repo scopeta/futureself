@@ -2,7 +2,7 @@
 
 > Status: Active Implementation Spec
 > Date: 2026-03-05
-> Scope: Rebuild-ready architecture and contracts (Phase 1–2 complete)
+> Scope: Rebuild-ready architecture and contracts (Phase 1–3 complete)
 
 ---
 
@@ -329,22 +329,31 @@ Must cover:
 - Fact extraction into inferred facts.
 - Mock-driven and live-capable test suites.
 
+**Phase 3: The Initial Interface**
+- Basic Web UI for standard user flow.
+- First-time user set up flow to capture basic blueprint.
 
-**Phase 3: The Data**
+**Phase 4: Model router and cloud**
+- Model router logic to optimize the performance and cost of LLM calls according to the task complexity or knowledge domain performance. 
+- Each agent may have their own optimum model choice
+- Deploy and run application and agents on the cloud 
+
+**Phase 5: The Data**
 - User persistence (saving blueprint state across sessions).
 - Supplement tracking and biomarker measurement history.
 - Blueprint data quality verification and context drift flagging.
 - Conversation history population.
 
-**Phase 4: The Interface**
+**Phase 6: The Advanced Interface**
 - WhatsApp integration as primary conversational interface.
-- Web UI for blueprint management, data quality flags, and lab test/exam uploads.
+- Web UI includes blueprint management, data quality flags, and lab test/exam uploads.
+- Both UIs has a first-time user set up to capture basic blueprint.
 
-**Phase 5: Enhance Agents** *(Continuous)*
+**Phase 7: Enhance Agents** *(Continuous)*
 - Specialized tools to expand agent capabilities.
 - Advice evaluation and quality feedback loops.
 
-**Phase 6: Proactive Advice** *(Optional)*
+**Phase 8: Proactive Advice** *(Optional)*
 - Proactive analysis and recommendations.
 - Daily check-in capture.
 

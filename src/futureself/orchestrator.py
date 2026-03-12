@@ -24,6 +24,7 @@ from futureself.schemas import (
     OrchestratorResult,
     UserBlueprint,
 )
+from futureself.telemetry import set_span_attributes, span
 
 _ORCHESTRATOR_PROMPT_PATH = Path(__file__).parent.parent.parent / "prompts" / "orchestrator.md"
 
@@ -307,30 +308,32 @@ async def _extract_facts(
 
     Never mutates the original blueprint.
     """
-    memos = "\n".join(f"[{k}] {r.advice}" for k, r in responses.items())
-    user_content = (
-        f"USER BLUEPRINT:\n{blueprint.model_dump_json(indent=2)}\n\n"
-        f"USER MESSAGE:\n{user_message}\n\n"
-        f"ADVISOR MEMOS:\n{memos}"
-    )
-    raw = await provider.complete(
-        system=_FACTS_SYSTEM,
-        user=user_content,
-        response_format={"type": "json_object"},
-    )
-    data = _parse_json_object(raw)
-    new_facts: list[str] = data.get("new_facts", [])
-    if not isinstance(new_facts, list):
-        new_facts = []
+    with span("orchestrator.extract_facts") as s:
+        memos = "\n".join(f"[{k}] {r.advice}" for k, r in responses.items())
+        user_content = (
+            f"USER BLUEPRINT:\n{blueprint.model_dump_json(indent=2)}\n\n"
+            f"USER MESSAGE:\n{user_message}\n\n"
+            f"ADVISOR MEMOS:\n{memos}"
+        )
+        raw = await provider.complete(
+            system=_FACTS_SYSTEM,
+            user=user_content,
+            response_format={"type": "json_object"},
+        )
+        data = _parse_json_object(raw)
+        new_facts: list[str] = data.get("new_facts", [])
+        if not isinstance(new_facts, list):
+            new_facts = []
 
-    if not new_facts:
-        return blueprint
+        if not new_facts:
+            return blueprint
 
-    existing = set(blueprint.inferred_facts)
-    unique_new = [f for f in new_facts if f not in existing]
-    return blueprint.model_copy(
-        update={"inferred_facts": list(blueprint.inferred_facts) + unique_new}
-    )
+        existing = set(blueprint.inferred_facts)
+        unique_new = [f for f in new_facts if f not in existing]
+        set_span_attributes(s, {"orchestrator.new_facts_count": len(unique_new)})
+        return blueprint.model_copy(
+            update={"inferred_facts": list(blueprint.inferred_facts) + unique_new}
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -357,51 +360,73 @@ async def run_turn(
     if provider is None:
         provider = LLMProvider.get_default()
 
-    # 1. Select agents
-    agent_keys = await _select_agents(user_blueprint, user_message, provider)
+    with span("orchestrator.run_turn") as turn_span:
+        # 1. Select agents
+        with span("orchestrator.select_agents") as s:
+            agent_keys = await _select_agents(user_blueprint, user_message, provider)
+            if not agent_keys:
+                agent_keys = ["mental_health"]
+            set_span_attributes(s, {
+                "orchestrator.agents_selected": agent_keys,
+                "orchestrator.agent_count": len(agent_keys),
+            })
 
-    if not agent_keys:
-        # Fallback: at least consult mental_health for anything
-        agent_keys = ["mental_health"]
-
-    # 2. Fan-out
-    initial_responses = await _fan_out(agent_keys, user_blueprint, user_message, provider)
-
-    # 3. Conflict detection
-    conflict_detected, conflict_summary, implicated_agents = await _detect_conflicts(
-        initial_responses, provider
-    )
-
-    refined_responses: dict[str, AgentResponse] = {}
-
-    # 4. Critique rounds (only if conflict detected)
-    if conflict_detected and implicated_agents:
-        current_responses = dict(initial_responses)
-        for round_num in range(1, MAX_CRITIQUE_ROUNDS + 1):
-            round_refined = await _run_critique_round(
-                current_responses,
-                implicated_agents,
-                conflict_summary,
-                user_blueprint,
-                user_message,
-                provider,
-                round_num,
+        # 2. Fan-out
+        with span("orchestrator.fan_out", {"orchestrator.agents": agent_keys}):
+            initial_responses = await _fan_out(
+                agent_keys, user_blueprint, user_message, provider
             )
-            refined_responses.update(round_refined)
-            current_responses.update(round_refined)
 
-    # 5. Synthesise — use refined responses where available, initial otherwise
-    final_responses = dict(initial_responses)
-    final_responses.update(refined_responses)
+        # 3. Conflict detection
+        with span("orchestrator.detect_conflicts") as s:
+            conflict_detected, conflict_summary, implicated_agents = (
+                await _detect_conflicts(initial_responses, provider)
+            )
+            set_span_attributes(s, {
+                "orchestrator.conflict_detected": conflict_detected,
+                "orchestrator.implicated_agents": implicated_agents,
+            })
 
-    # 6. Extract facts concurrently with synthesis to keep user path responsive.
-    facts_task = asyncio.create_task(
-        _extract_facts(user_blueprint, user_message, final_responses, provider)
-    )
-    user_facing_reply = await _synthesise(
-        user_message, final_responses, conflict_summary, provider
-    )
-    updated_blueprint = await facts_task
+        refined_responses: dict[str, AgentResponse] = {}
+
+        # 4. Critique rounds (only if conflict detected)
+        if conflict_detected and implicated_agents:
+            current_responses = dict(initial_responses)
+            for round_num in range(1, MAX_CRITIQUE_ROUNDS + 1):
+                with span("orchestrator.critique_round", {
+                    "orchestrator.critique_round": round_num,
+                }):
+                    round_refined = await _run_critique_round(
+                        current_responses,
+                        implicated_agents,
+                        conflict_summary,
+                        user_blueprint,
+                        user_message,
+                        provider,
+                        round_num,
+                    )
+                    refined_responses.update(round_refined)
+                    current_responses.update(round_refined)
+
+        # 5. Synthesise — use refined responses where available, initial otherwise
+        final_responses = dict(initial_responses)
+        final_responses.update(refined_responses)
+
+        # 6. Extract facts concurrently with synthesis.
+        facts_task = asyncio.create_task(
+            _extract_facts(user_blueprint, user_message, final_responses, provider)
+        )
+        with span("orchestrator.synthesise"):
+            user_facing_reply = await _synthesise(
+                user_message, final_responses, conflict_summary, provider
+            )
+        updated_blueprint = await facts_task
+
+        set_span_attributes(turn_span, {
+            "orchestrator.agents_consulted": agent_keys,
+            "orchestrator.conflict_detected": conflict_detected,
+            "orchestrator.reply_length": len(user_facing_reply),
+        })
 
     return OrchestratorResult(
         agents_consulted=agent_keys,

@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}FutureSelf — Get Started{% endblock %}
+
+{% block content %}
+<article>
+    <header>
+        <h2>Meet Your Future Self</h2>
+        <p>Let's start with the basics so your future self can give you meaningful advice.</p>
+    </header>
+
+    <form method="post" action="/onboard/step1">
+        <label>
+            Age
+            <input type="number" name="age" min="1" max="150" required placeholder="e.g. 34">
+        </label>
+
+        <label>
+            Sex
+            <input type="text" name="sex" required placeholder="e.g. male, female, non-binary">
+        </label>
+
+        <div class="grid">
+            <label>
+                Height (cm) <small>optional</small>
+                <input type="number" name="height_cm" step="0.1" placeholder="e.g. 178">
+            </label>
+            <label>
+                Weight (kg) <small>optional</small>
+                <input type="number" name="weight_kg" step="0.1" placeholder="e.g. 75">
+            </label>
+        </div>
+
+        <button type="submit">Next</button>
+    </form>
+</article>
+{% endblock %}

@@ -43,6 +43,9 @@ When rebuilding or refactoring, resolve conflicts in this order:
 - Domain-specific extensions are allowed alongside the base fields.
 - Invalid or malformed model JSON must never crash a turn. Parsing must degrade gracefully to safe defaults.
 - Tests go in `tests/` mirroring `src/`.
+- Enable OpenTelemetry.
+- Run on the Cloud. Design agnostic of provider through abstraction interfaces. Initally focused on Microsoft stack.
+
 
 ## Prompt File Conventions
 - Each prompt file in `prompts/` is plain Markdown, loadable directly as a system prompt.
@@ -52,11 +55,9 @@ When rebuilding or refactoring, resolve conflicts in this order:
 - All worker prompts must include an explicit coordination line naming which other agents to coordinate with through the orchestrator.
 
 ## Current Phase
-Phase 2 (Orchestrator) complete. Next: Phase 3 (Data).
+Phase 4 (Model router and cloud): Initially focused on Microsoft stack, like Foundry and its model router. Designed agnostic of provider through abstraction interfaces.  
 
 ## Explicit Do-Not-Do
-- No frontend work before Phase 4.
-- No hard dependency on a specific vector DB/cloud provider.
 - No sub-agent direct user addressing.
 - No orchestrator bypass.
 
