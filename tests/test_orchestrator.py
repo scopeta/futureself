@@ -8,6 +8,7 @@ import pytest
 
 from futureself.agents import AGENT_REGISTRY, MAX_CRITIQUE_ROUNDS
 from futureself.llm.provider import LLMProvider
+from futureself.llm.router import ModelRouter
 from futureself.orchestrator import (
     _detect_conflicts,
     _extract_facts,
@@ -94,7 +95,8 @@ async def test_fan_out_calls_selected_agents(blank_blueprint):
         _agent_json("physical_health"),
         _agent_json("financial"),
     )
-    result = await _fan_out(["physical_health", "financial"], blank_blueprint, "test", provider)
+    router = ModelRouter.from_single_provider(provider)
+    result = await _fan_out(["physical_health", "financial"], blank_blueprint, "test", router)
     assert set(result.keys()) == {"physical_health", "financial"}
     assert result["physical_health"].domain == "physical_health"
     assert result["financial"].domain == "financial"

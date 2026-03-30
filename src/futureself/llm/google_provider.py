@@ -40,6 +40,8 @@ class GoogleProvider(LLMProvider):
     (default 15 RPM, configurable via ``GEMINI_RPM`` env var).
     """
 
+    provider_type: str = "google"
+
     def __init__(self, model: str = "gemini-2.0-flash") -> None:
         self.client = genai.Client()
         self.model = model

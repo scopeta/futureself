@@ -18,6 +18,7 @@ from typing import Any
 
 from futureself.agents import AGENT_REGISTRY, MAX_CRITIQUE_ROUNDS
 from futureself.llm.provider import LLMProvider
+from futureself.llm.router import ModelRouter, get_router
 from futureself.schemas import (
     AgentResponse,
     CritiqueContext,
@@ -97,13 +98,15 @@ async def _fan_out(
     agent_keys: list[str],
     blueprint: UserBlueprint,
     user_message: str,
-    provider: LLMProvider,
+    router: ModelRouter,
 ) -> dict[str, AgentResponse]:
     """Run selected agents in parallel and collect their responses."""
 
     async def _call(key: str) -> tuple[str, AgentResponse]:
         run_fn = AGENT_REGISTRY[key]
-        response = await run_fn(blueprint, user_message, provider=provider)
+        response = await run_fn(
+            blueprint, user_message, provider=router.get_provider(f"agent.{key}"),
+        )
         return key, response
 
     results = await asyncio.gather(*[_call(k) for k in agent_keys])
@@ -191,7 +194,7 @@ async def _run_critique_round(
     conflict_summary: str,
     blueprint: UserBlueprint,
     user_message: str,
-    provider: LLMProvider,
+    router: ModelRouter,
     round_number: int,
 ) -> dict[str, AgentResponse]:
     """Re-invoke implicated agents with CritiqueContext for conflict resolution."""
@@ -212,7 +215,10 @@ async def _run_critique_round(
             round_number=round_number,
         )
         run_fn = AGENT_REGISTRY[agent_key]
-        refined = await run_fn(blueprint, user_message, critique_context=ctx, provider=provider)
+        refined = await run_fn(
+            blueprint, user_message, critique_context=ctx,
+            provider=router.get_provider(f"agent.{agent_key}"),
+        )
         return agent_key, refined
 
     valid_agents = [a for a in implicated_agents if a in responses]
@@ -346,24 +352,34 @@ async def run_turn(
     user_message: str,
     *,
     provider: LLMProvider | None = None,
+    router: ModelRouter | None = None,
 ) -> OrchestratorResult:
     """Run one full turn of the orchestrator pipeline.
 
     Args:
         user_blueprint: Read-only user profile.
         user_message: The user's raw message.
-        provider: Optional LLMProvider override (for testing).
+        provider: Optional single-provider override (for testing).
+            When given, all tasks use this provider.
+        router: Optional ``ModelRouter`` for per-task provider routing.
+            Takes precedence over *provider* if both are supplied.
 
     Returns:
         OrchestratorResult containing all intermediate and final outputs.
     """
-    if provider is None:
-        provider = LLMProvider.get_default()
+    if router is None:
+        if provider is not None:
+            router = ModelRouter.from_single_provider(provider)
+        else:
+            router = get_router()
 
     with span("orchestrator.run_turn") as turn_span:
         # 1. Select agents
         with span("orchestrator.select_agents") as s:
-            agent_keys = await _select_agents(user_blueprint, user_message, provider)
+            agent_keys = await _select_agents(
+                user_blueprint, user_message,
+                router.get_provider("orchestrator.select_agents"),
+            )
             if not agent_keys:
                 agent_keys = ["mental_health"]
             set_span_attributes(s, {
@@ -374,13 +390,16 @@ async def run_turn(
         # 2. Fan-out
         with span("orchestrator.fan_out", {"orchestrator.agents": agent_keys}):
             initial_responses = await _fan_out(
-                agent_keys, user_blueprint, user_message, provider
+                agent_keys, user_blueprint, user_message, router
             )
 
         # 3. Conflict detection
         with span("orchestrator.detect_conflicts") as s:
             conflict_detected, conflict_summary, implicated_agents = (
-                await _detect_conflicts(initial_responses, provider)
+                await _detect_conflicts(
+                    initial_responses,
+                    router.get_provider("orchestrator.detect_conflicts"),
+                )
             )
             set_span_attributes(s, {
                 "orchestrator.conflict_detected": conflict_detected,
@@ -402,7 +421,7 @@ async def run_turn(
                         conflict_summary,
                         user_blueprint,
                         user_message,
-                        provider,
+                        router,
                         round_num,
                     )
                     refined_responses.update(round_refined)
@@ -414,11 +433,15 @@ async def run_turn(
 
         # 6. Extract facts concurrently with synthesis.
         facts_task = asyncio.create_task(
-            _extract_facts(user_blueprint, user_message, final_responses, provider)
+            _extract_facts(
+                user_blueprint, user_message, final_responses,
+                router.get_provider("orchestrator.extract_facts"),
+            )
         )
         with span("orchestrator.synthesise"):
             user_facing_reply = await _synthesise(
-                user_message, final_responses, conflict_summary, provider
+                user_message, final_responses, conflict_summary,
+                router.get_provider("orchestrator.synthesise"),
             )
         updated_blueprint = await facts_task
 

@@ -55,7 +55,9 @@ When rebuilding or refactoring, resolve conflicts in this order:
 - All worker prompts must include an explicit coordination line naming which other agents to coordinate with through the orchestrator.
 
 ## Current Phase
-Phase 4 (Model router and cloud): Initially focused on Microsoft stack, like Foundry and its model router. Designed agnostic of provider through abstraction interfaces.  
+Phase 5 (The Data): User persistence, supplement tracking, biomarker history, blueprint data quality, conversation history population.
+
+Phase 4 (Model router and cloud) is complete: ModelRouter with per-task provider routing, Azure AI Foundry provider with model-router support, containerized deployment on Azure Container Apps.
 
 ## Explicit Do-Not-Do
 - No sub-agent direct user addressing.
@@ -64,11 +66,14 @@ Phase 4 (Model router and cloud): Initially focused on Microsoft stack, like Fou
 ## Key Files
 - `futureself-spec.md` — runtime architecture, contracts, rebuild checklist
 - `prompts/` — agent system prompts
+- `config/routing.yaml` — per-task model routing configuration
 - `tests/` — test suite mirroring `src/`
 - `scenarios/` — live test YAML scenarios
+- `infra/azure/main.bicep` — Azure Container Apps deployment template
 
 ## CI/CD
 - **`ci.yml`** — runs on every push/PR to `main`: installs deps, runs `pytest tests/ -v`.
 - **`live.yml`** — manual dispatch only: requires `OPENAI_API_KEY` secret, runs live scenario tests.
+- **`deploy.yml`** — manual dispatch: builds Docker image, pushes to ACR, deploys to Azure Container Apps.
 - `main` is the default branch. CI must pass before merging.
 - Secret `OPENAI_API_KEY` is only needed for live scenario tests.

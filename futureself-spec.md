@@ -2,7 +2,7 @@
 
 > Status: Active Implementation Spec
 > Date: 2026-03-05
-> Scope: Rebuild-ready architecture and contracts (Phase 1–3 complete)
+> Scope: Rebuild-ready architecture and contracts (Phase 1–4 complete)
 
 ---
 
@@ -218,7 +218,7 @@ class LLMProvider(ABC):
 ### Provider selection
 
 Environment variables:
-- `FUTURESELF_LLM_PROVIDER` — `openai` | `anthropic` (alias: `claude`) | `google` (alias: `gemini`)
+- `FUTURESELF_LLM_PROVIDER` — `openai` | `anthropic` (alias: `claude`) | `google` (alias: `gemini`) | `azure_foundry` (alias: `azure`)
 - `FUTURESELF_LLM_MODEL` — overrides provider default model
 
 | Provider | Env key for API key | Default model | Concurrency control |
@@ -226,6 +226,24 @@ Environment variables:
 | OpenAI | `OPENAI_API_KEY` | `gpt-5-nano` | `OPENAI_MAX_CONCURRENT` (default 4) |
 | Anthropic | `ANTHROPIC_API_KEY` | `claude-haiku-4-5-20251001` | — |
 | Google Gemini | `GOOGLE_API_KEY` / `GEMINI_API_KEY` | `gemini-2.0-flash` | `GEMINI_RPM` (default 15) |
+| Azure AI Foundry | `AZURE_FOUNDRY_API_KEY` | `model-router` | `AZURE_FOUNDRY_MAX_CONCURRENT` (default 10) |
+
+Azure AI Foundry's `model-router` deployment automatically selects the best underlying model per-prompt based on task complexity (Balanced / Cost / Quality modes configured in the Foundry portal). The response's `model` field reveals which model was actually used.
+
+### Model routing (per-task provider selection)
+
+A `ModelRouter` class routes each pipeline task to a specific `LLMProvider` instance based on a YAML configuration (`config/routing.yaml` or path in `FUTURESELF_ROUTING_CONFIG` env var).
+
+```
+RouterConfig:
+  default_provider: str           # key into providers dict
+  providers: dict[str, ProviderEntry]
+  tasks: dict[str, TaskRoute]     # per-task overrides (optional)
+```
+
+Task keys: `orchestrator.select_agents`, `orchestrator.detect_conflicts`, `orchestrator.synthesise`, `orchestrator.extract_facts`, `agent.<domain>`.
+
+When no routing config exists, the system falls back to single-provider mode via `LLMProvider.get_default()`.
 
 ### Provider hardening requirements
 
@@ -329,14 +347,18 @@ Must cover:
 - Fact extraction into inferred facts.
 - Mock-driven and live-capable test suites.
 
-**Phase 3: The Initial Interface**
+**Phase 3: The Initial Interface** — *Complete*
 - Basic Web UI for standard user flow.
 - First-time user set up flow to capture basic blueprint.
 
-**Phase 4: Model router and cloud**
-- Model router logic to optimize the performance and cost of LLM calls according to the task complexity or knowledge domain performance. 
-- Each agent may have their own optimum model choice
-- Deploy and run application and agents on the cloud 
+**Phase 4: Model router and cloud** — *Complete*
+- `ModelRouter` routes each pipeline task to a configured provider+model via YAML config.
+- Azure AI Foundry provider with `model-router` support (auto-selects best model per-prompt).
+- Per-agent model overrides via `config/routing.yaml`.
+- Containerized deployment: Dockerfile, docker-compose, Azure Container Apps (Bicep IaC).
+- Azure Monitor telemetry exporter (opt-in via `APPLICATIONINSIGHTS_CONNECTION_STRING`).
+- CI/CD: deploy workflow via GitHub Actions to ACR + Azure Container Apps.
+
 
 **Phase 5: The Data**
 - User persistence (saving blueprint state across sessions).

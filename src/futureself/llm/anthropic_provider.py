@@ -14,6 +14,8 @@ class AnthropicProvider(LLMProvider):
     be overridden via ``FUTURESELF_LLM_MODEL``.
     """
 
+    provider_type: str = "anthropic"
+
     def __init__(self, model: str = "claude-sonnet-4-20250514") -> None:
         self.client = anthropic.AsyncAnthropic()
         self.model = model

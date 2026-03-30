@@ -34,9 +34,23 @@ def init_telemetry(service_name: str = "futureself") -> None:
 
     global _tracer  # noqa: PLW0603
 
+    import os  # noqa: PLC0415
+
     resource = Resource.create({"service.name": service_name})
     provider = TracerProvider(resource=resource)
     provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
+
+    # Azure Monitor exporter: activate when APPLICATIONINSIGHTS_CONNECTION_STRING is set.
+    appinsights_conn = os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING")
+    if appinsights_conn:
+        try:
+            from azure.monitor.opentelemetry.exporter import AzureMonitorTraceExporter  # noqa: PLC0415
+
+            azure_exporter = AzureMonitorTraceExporter(connection_string=appinsights_conn)
+            provider.add_span_processor(BatchSpanProcessor(azure_exporter))
+        except ImportError:
+            pass  # azure-monitor-opentelemetry-exporter not installed
+
     trace.set_tracer_provider(provider)
     _tracer = trace.get_tracer("futureself", "0.1.0")
 

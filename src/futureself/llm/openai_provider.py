@@ -12,6 +12,9 @@ from futureself.llm.provider import LLMProvider
 class OpenAIProvider(LLMProvider):
     """LLMProvider backed by any OpenAI-compatible Chat Completions API.
 
+    .. attribute:: provider_type
+       :value: "openai"
+
     Reads ``OPENAI_API_KEY`` and optionally ``OPENAI_BASE_URL`` from the
     environment.  Setting ``OPENAI_BASE_URL`` lets you point at GitHub
     Models, Groq, OpenRouter, or any other compatible endpoint.
@@ -24,14 +27,21 @@ class OpenAIProvider(LLMProvider):
     ``FUTURESELF_LLM_MODEL``.
     """
 
-    def __init__(self, model: str = "gpt-5-nano") -> None:
-        base_url = os.getenv("OPENAI_BASE_URL")
+    provider_type: str = "openai"
+
+    def __init__(
+        self,
+        model: str = "gpt-5-nano",
+        base_url: str | None = None,
+        max_concurrent: int | None = None,
+    ) -> None:
+        resolved_base_url = base_url or os.getenv("OPENAI_BASE_URL")
         self.client = openai.AsyncOpenAI(
-            **(dict(base_url=base_url) if base_url else {}),
+            **(dict(base_url=resolved_base_url) if resolved_base_url else {}),
         )
         self.model = model
-        max_concurrent = _read_positive_int("OPENAI_MAX_CONCURRENT", default=4)
-        self._semaphore = asyncio.Semaphore(max_concurrent)
+        concurrency = max_concurrent or _read_positive_int("OPENAI_MAX_CONCURRENT", default=4)
+        self._semaphore = asyncio.Semaphore(concurrency)
 
     async def complete(
         self,

@@ -1,0 +1,43 @@
+# FutureSelf — LLM Routing Configuration
+#
+# Each pipeline task (agent domain or orchestrator stage) can be routed to a
+# different provider + model.  Tasks without an explicit override use the
+# default_provider.
+#
+# Task keys
+# ---------
+#   orchestrator.select_agents
+#   orchestrator.detect_conflicts
+#   orchestrator.synthesise
+#   orchestrator.extract_facts
+#   agent.physical_health
+#   agent.mental_health
+#   agent.financial
+#   agent.social_relations
+#   agent.geopolitics
+#   agent.time_management
+#
+# Provider types: openai | anthropic | google | azure_foundry
+#
+# Example using Azure AI Foundry Model Router with a pinned synthesis model:
+#
+#   default_provider: foundry_router
+#   providers:
+#     foundry_router:
+#       type: azure_foundry
+#       model: model-router          # Foundry auto-selects best model
+#     foundry_quality:
+#       type: azure_foundry
+#       model: gpt-5                 # pin high-quality for synthesis
+#   tasks:
+#     orchestrator.synthesise:
+#       provider: foundry_quality
+
+default_provider: foundry_router
+
+providers:
+  foundry_router:
+    type: azure_foundry
+    model: model-router
+
+tasks: {}

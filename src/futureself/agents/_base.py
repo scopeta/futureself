@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from futureself.llm.provider import LLMProvider
+from futureself.llm.router import get_router
 from futureself.schemas import AgentResponse, CritiqueContext, UserBlueprint
 from futureself.telemetry import set_span_attributes, span
 
@@ -104,11 +105,13 @@ def make_run(
         provider: LLMProvider | None = None,
     ) -> AgentResponse:
         if provider is None:
-            provider = LLMProvider.get_default()
+            provider = get_router().get_provider(f"agent.{domain}")
 
         with span(f"agent.{domain}.run", {
             "agent.domain": domain,
             "agent.is_critique": critique_context is not None,
+            "llm.provider_type": provider.provider_type,
+            "llm.model": provider.model,
         }) as s:
             raw = await provider.complete(
                 system=_load_prompt(),

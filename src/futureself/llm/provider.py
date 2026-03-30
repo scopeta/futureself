@@ -13,6 +13,12 @@ from abc import ABC, abstractmethod
 class LLMProvider(ABC):
     """Vendor-agnostic interface for LLM completions."""
 
+    provider_type: str = "unknown"
+    """Short identifier for this provider type (e.g. ``"openai"``, ``"azure_foundry"``)."""
+
+    model: str = "unknown"
+    """Model identifier currently in use."""
+
     @abstractmethod
     async def complete(
         self,
@@ -60,8 +66,14 @@ class LLMProvider(ABC):
             model = os.getenv("FUTURESELF_LLM_MODEL", "gemini-2.0-flash")
             return GoogleProvider(model=model)
 
+        if provider_name in ("azure_foundry", "azure"):
+            from futureself.llm.azure_foundry_provider import AzureFoundryProvider  # noqa: PLC0415
+
+            model = os.getenv("FUTURESELF_LLM_MODEL", "model-router")
+            return AzureFoundryProvider(model=model)
+
         raise ValueError(
             f"Unknown LLM provider: {provider_name!r}. "
             "Set FUTURESELF_LLM_PROVIDER to a supported value "
-            "('openai', 'anthropic', 'google')."
+            "('openai', 'anthropic', 'google', 'azure_foundry')."
         )
