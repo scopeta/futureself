@@ -17,10 +17,10 @@ from futureself.schemas import OrchestratorResult, UserBlueprint
 def _mock_agent(reply: str) -> MagicMock:
     """Return a mock MAF agent that returns a fixed reply from agent.run()."""
     result = MagicMock()
-    result.value = reply
+    result.text = reply  # AgentResponse.text, not .value
 
     agent = MagicMock()
-    agent.create_session = AsyncMock(return_value=MagicMock())
+    agent.create_session = MagicMock(return_value=MagicMock())  # sync
     agent.run = AsyncMock(return_value=result)
     return agent
 

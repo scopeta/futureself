@@ -1,13 +1,22 @@
 """Orchestrator — the Future Self Synthesizer.
 
-Single-agent pipeline using Microsoft Agent Framework (MAF):
-  User message + UserBlueprint
-    → ChatAgent (Claude Opus 4.6 via Azure AI Foundry)
-      with SkillsProvider (6 domain SKILL.md files)
-    → Claude loads relevant skills on demand via load_skill tool
-    → Synthesizes Future Self reply
-    → Facts extracted from reply (regex, no extra LLM call)
-    → Updated UserBlueprint returned
+Uses Microsoft Agent Framework (MAF) for all execution paths, providing
+SkillsProvider (lazy skill loading), OpenTelemetry tracing, and session
+management throughout.
+
+Two client backends, selected from environment variables:
+
+1. **Anthropic direct** — ``ANTHROPIC_API_KEY`` set (and no Foundry endpoint).
+   Uses ``agent_framework_anthropic.AnthropicClient``.
+   Runs via MAF Agent Services for cloud deployment.
+
+2. **Azure AI Foundry** — ``AZURE_FOUNDRY_ENDPOINT`` set.
+   Uses ``agent_framework_foundry.FoundryChatClient`` — model-agnostic.
+   Supports any model deployed to Foundry (GPT, Claude, Grok, etc.).
+   Enables MAF + Foundry Agent Service integration and Application Insights.
+
+Model is configured via ``FUTURESELF_MODEL`` (required; no default).
+Skills are lazy-loaded via MAF's ``SkillsProvider``.
 """
 from __future__ import annotations
 
@@ -31,8 +40,8 @@ def _resolve_model() -> str:
     model = os.getenv("FUTURESELF_MODEL", "")
     if not model:
         raise ValueError(
-            "FUTURESELF_MODEL is required. Set it to the model deployment name "
-            "for your Foundry project (e.g. 'claude-opus-4-6', 'gpt-4o')."
+            "FUTURESELF_MODEL is required. Set it to the model name for your "
+            "chosen provider (e.g. 'claude-opus-4-6', 'claude-sonnet-4-5', 'gpt-4o')."
         )
     return model
 
@@ -41,21 +50,75 @@ def _load_orchestrator_prompt() -> str:
     return _ORCHESTRATOR_PROMPT_PATH.read_text(encoding="utf-8")
 
 
-def _build_user_context(blueprint: UserBlueprint, user_message: str) -> str:
-    """Render the user context passed to the agent each turn."""
-    history_lines = []
-    for turn in blueprint.conversation_history[-10:]:  # last 10 turns
-        history_lines.append(f"{turn.role.upper()}: {turn.content}")
+def _build_agent(model: str) -> object:
+    """Build and return the MAF Agent with SkillsProvider.
 
-    facts_section = ""
-    if blueprint.inferred_facts:
-        facts_section = "\n\nKNOWN FACTS ABOUT USER:\n" + "\n".join(
-            f"- {f}" for f in blueprint.inferred_facts
+    Client selection:
+    - ``AZURE_FOUNDRY_ENDPOINT`` set → ``FoundryChatClient`` (model-agnostic,
+      supports any Foundry-deployed model, Entra ID auth).
+    - ``ANTHROPIC_API_KEY`` set → ``AnthropicClient`` (Anthropic direct API).
+
+    Both are MAF-native ``BaseChatClient`` implementations — the same
+    ``Agent`` + ``SkillsProvider`` pipeline applies in both cases.
+
+    Args:
+        model: Model deployment name (from ``FUTURESELF_MODEL``).
+
+    Raises:
+        ValueError: If neither provider env var is configured.
+        ImportError: If required MAF client packages are not installed.
+    """
+    # Lazy imports — SDK packages may not be installed in all environments
+    from agent_framework import Agent, SkillsProvider  # noqa: PLC0415
+
+    skills_provider = SkillsProvider(skill_paths=_SKILLS_DIR)
+
+    endpoint = os.getenv("AZURE_FOUNDRY_ENDPOINT", "")
+    if endpoint:
+        from agent_framework_foundry import FoundryChatClient  # noqa: PLC0415
+        from azure.identity import DefaultAzureCredential  # noqa: PLC0415
+
+        client = FoundryChatClient(
+            project_endpoint=endpoint,
+            model=model,
+            credential=DefaultAzureCredential(),
         )
+    else:
+        api_key = os.getenv("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            raise ValueError(
+                "No LLM provider configured. Set AZURE_FOUNDRY_ENDPOINT (Foundry) "
+                "or ANTHROPIC_API_KEY (Anthropic direct)."
+            )
+        from agent_framework_anthropic import AnthropicClient  # noqa: PLC0415
 
-    history_section = ""
-    if history_lines:
-        history_section = "\n\nCONVERSATION HISTORY:\n" + "\n".join(history_lines)
+        client = AnthropicClient(api_key=api_key, model=model)
+
+    return Agent(
+        client,
+        instructions=_load_orchestrator_prompt(),
+        name="FutureSelf",
+        context_providers=[skills_provider],
+    )
+
+
+def _build_user_context(blueprint: UserBlueprint, user_message: str) -> str:
+    """Render the per-turn user context block."""
+    history_lines = [
+        f"{turn.role.upper()}: {turn.content}"
+        for turn in blueprint.conversation_history[-10:]
+    ]
+
+    facts_section = (
+        "\n\nKNOWN FACTS ABOUT USER:\n" + "\n".join(f"- {f}" for f in blueprint.inferred_facts)
+        if blueprint.inferred_facts
+        else ""
+    )
+    history_section = (
+        "\n\nCONVERSATION HISTORY:\n" + "\n".join(history_lines)
+        if history_lines
+        else ""
+    )
 
     return (
         f"USER PROFILE:\n{blueprint.model_dump_json(indent=2)}"
@@ -68,89 +131,60 @@ def _build_user_context(blueprint: UserBlueprint, user_message: str) -> str:
 def _extract_facts_simple(reply: str, blueprint: UserBlueprint) -> list[str]:
     """Extract new facts from the reply without an LLM call.
 
-    Looks for common patterns: age mentions, location, conditions, goals.
-    Returns only facts not already in the blueprint.
+    Looks for common patterns: age mentions, location. Returns only facts not
+    already present in the blueprint.
     """
     existing = set(blueprint.inferred_facts)
     candidates: list[str] = []
 
-    # Age pattern: "I'm 35" / "I am 42 years old"
     for m in re.finditer(r"\bI(?:'m| am) (\d{2,3})(?: years? old)?\b", reply, re.I):
         candidates.append(f"User is {m.group(1)} years old")
 
-    # Location pattern: "I live in X" / "based in X"
     for m in re.finditer(r"\b(?:I live|based|living) in ([A-Z][a-zA-Z\s,]+?)(?:\.|,|\n|$)", reply):
         candidates.append(f"User lives in {m.group(1).strip()}")
 
     return [f for f in candidates if f not in existing]
 
 
-def _build_agent(project_endpoint: str, model: str) -> object:
-    """Build and return the MAF ChatAgent with SkillsProvider.
-
-    Args:
-        project_endpoint: Azure AI Foundry project endpoint URL.
-        model: Model deployment name in the Foundry project.
-    """
-    from agent_framework import SkillsProvider  # lazy import — not installed in local dev
-    from agent_framework.azure import AzureAIAgentClient
-    from azure.identity.aio import DefaultAzureCredential
-
-    skills_provider = SkillsProvider(skill_paths=_SKILLS_DIR)
-
-    return AzureAIAgentClient(
-        project_endpoint=project_endpoint,
-        model_deployment_name=model,
-        credential=DefaultAzureCredential(),
-    ).as_agent(
-        name="FutureSelf",
-        instructions=_load_orchestrator_prompt(),
-        context_providers=[skills_provider],
-    )
-
-
 async def run_turn(
     user_blueprint: UserBlueprint,
     user_message: str,
     *,
-    project_endpoint: str | None = None,
     _agent: object | None = None,
     _model: str | None = None,
 ) -> OrchestratorResult:
-    """Run one turn of the Future Self agent via MAF on Azure AI Foundry.
+    """Run one turn of the Future Self agent via MAF.
 
     Args:
-        user_blueprint: Read-only user profile.
+        user_blueprint: Current user profile (treated as immutable input).
         user_message: The user's raw message.
-        project_endpoint: Azure AI Foundry project endpoint URL.
-            Falls back to the ``AZURE_FOUNDRY_ENDPOINT`` environment variable.
-        _agent: Injectable MAF agent instance (testing — skips building a real agent).
-        _model: Injectable model name (testing — skips ``FUTURESELF_MODEL`` lookup).
+        _agent: Injected MAF Agent instance (testing — skips env-var lookup).
+        _model: Injected model name (testing — skips ``FUTURESELF_MODEL`` lookup).
 
     Returns:
         OrchestratorResult with user_facing_reply, updated_blueprint, llm_traces.
     """
     model = _model if _model is not None else _resolve_model()
-    endpoint = project_endpoint or os.getenv("AZURE_FOUNDRY_ENDPOINT", "")
-    agent = _agent if _agent is not None else _build_agent(endpoint, model)
+    agent = _agent if _agent is not None else _build_agent(model)
 
     user_ctx = _build_user_context(user_blueprint, user_message)
 
     t0 = time.monotonic()
-    session = await agent.create_session()
+    session = agent.create_session()  # sync
     result = await agent.run(user_ctx, session=session)
     latency_ms = (time.monotonic() - t0) * 1000
 
-    user_reply: str = result.value or ""
+    user_reply: str = result.text or ""
 
     new_facts = _extract_facts_simple(user_reply, user_blueprint)
     existing = set(user_blueprint.inferred_facts)
-    unique_new = [f for f in new_facts if f not in existing]
 
     updated_blueprint = user_blueprint.model_copy(
         update={
-            "inferred_facts": list(user_blueprint.inferred_facts) + unique_new,
-            "conversation_history": list(user_blueprint.conversation_history) + [
+            "inferred_facts": list(user_blueprint.inferred_facts)
+            + [f for f in new_facts if f not in existing],
+            "conversation_history": list(user_blueprint.conversation_history)
+            + [
                 ConversationTurn(role="user", content=user_message),
                 ConversationTurn(role="assistant", content=user_reply),
             ],
