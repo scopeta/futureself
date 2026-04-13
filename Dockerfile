@@ -1,32 +1,38 @@
-# ---- Build stage ----
+# ---- Frontend build stage ----
+FROM node:20-slim AS frontend-builder
+
+WORKDIR /frontend
+
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm ci
+
+COPY frontend/ ./
+RUN npm run build
+
+# ---- Python build stage ----
 FROM python:3.12-slim AS builder
 
 WORKDIR /app
 
-# Install uv for fast dependency resolution.
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-# Copy dependency metadata and source for package install.
 COPY pyproject.toml uv.lock ./
 COPY src/ src/
 
-# Install production + otel dependencies (no dev extras).
-RUN uv sync --frozen --no-dev --extra otel
+# Install production dependencies only (no dev extras).
+RUN uv sync --frozen --no-dev
 
 # ---- Runtime stage ----
 FROM python:3.12-slim
 
 WORKDIR /app
 
-# Copy the virtual environment from the builder.
 COPY --from=builder /app/.venv .venv
+COPY --from=frontend-builder /frontend/dist frontend/dist
 
-# Copy application source code.
 COPY src/ src/
 COPY prompts/ prompts/
-COPY config/ config/
 
-# Ensure the venv Python is on PATH.
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONUNBUFFERED=1
 

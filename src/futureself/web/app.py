@@ -1,34 +1,52 @@
-"""FastAPI application for the FutureSelf web UI."""
+"""FastAPI application — JSON API backend for the FutureSelf React UI."""
 from __future__ import annotations
 
 from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from futureself.web.routes.chat import router as chat_router
-from futureself.web.routes.onboarding import router as onboarding_router
+from futureself.web.routes.api import router as api_router
 
 load_dotenv(override=True)
 
-_STATIC_DIR = Path(__file__).parent / "static"
+_FRONTEND_DIST = Path(__file__).parent.parent.parent.parent / "frontend" / "dist"
 
 
 def create_app() -> FastAPI:
     """Build and configure the FastAPI application."""
-    from futureself.telemetry import init_telemetry  # noqa: PLC0415
-
-    init_telemetry()
-
     application = FastAPI(title="FutureSelf")
 
     application.state.sessions = {}
     application.state.conversations = {}
 
-    application.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
-    application.include_router(onboarding_router)
-    application.include_router(chat_router)
+    # Allow the Vite dev server to call the API during local development
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost:5173"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    application.include_router(api_router, prefix="/api")
+
+    # Serve the built React app in production (frontend/dist must exist)
+    if _FRONTEND_DIST.exists():
+        _assets = _FRONTEND_DIST / "assets"
+        if _assets.exists():
+            application.mount(
+                "/assets",
+                StaticFiles(directory=str(_assets)),
+                name="assets",
+            )
+
+        @application.get("/{full_path:path}", include_in_schema=False)
+        async def spa_fallback(full_path: str) -> FileResponse:
+            return FileResponse(str(_FRONTEND_DIST / "index.html"))
 
     return application
 

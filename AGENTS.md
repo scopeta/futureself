@@ -1,7 +1,8 @@
 # FutureSelf — Agent Instructions (Single Source of Truth)
 
 ## Project Overview
-FutureSelf is a Supervisor-Worker multi-agent system for longevity guidance.
+FutureSelf is a single-agent longevity guidance system .
+The orchestrator reasons across all health domains internally using domain skills loaded on demand via the Microsoft Agent Framework (MAF) SkillsProvider.
 
 ## Source of Truth Precedence
 
@@ -9,71 +10,71 @@ When rebuilding or refactoring, resolve conflicts in this order:
 
 1. **`AGENTS.md`** for governance, constraints, and coding standards.
 2. **`futureself-spec.md`** for runtime architecture, data contracts, and rebuild checklist.
-3. **`prompts/*.md`** for role behavior, tone, and domain reasoning.
+3. **`prompts/orchestrator.md`** and **`src/futureself/skills/*/SKILL.md`** for role behavior, tone, and domain reasoning.
 
 ## Non-Negotiable Architecture Rules
 - The **Future Self Synthesizer** is the only user-facing agent.
-- Sub-agents never communicate peer-to-peer; all traffic goes through orchestrator.
-- Keep orchestration **LLM-agnostic** via provider abstraction interfaces.
-- Use two memory tiers:
-  - short-term conversation context
-  - long-term vector retrieval for User Blueprint
+- All reasoning is performed by a single Claude Opus 4.6 call per turn — no sub-agent fan-out.
+- Domain expertise is provided via MAF skills (`SKILL.md` files) loaded on demand via the `load_skill` tool.
+- Shared User Blueprint mutations must be controlled (orchestrator only).
 - Implement the solution minimizing architecture and codebase complexity, even if it means performing deep refactoring.
 
-## Agent Set (7)
-1. Future Self Synthesizer (orchestrator) → `prompts/orchestrator.md`
-2. Physical Health Agent → `prompts/physical_health.md`
-3. Mental Health Agent → `prompts/mental_health.md`
-4. Financial Agent → `prompts/financial.md`
-5. Social Relations Agent → `prompts/social_relations.md`
-6. Geopolitics Agent → `prompts/geopolitics.md`
-7. Time Management Agent → `prompts/time_management.md`
+## Agent and Skills
+
+**One agent:**
+- Future Self Synthesizer (orchestrator) → `prompts/orchestrator.md`
+
+**Six domain skills** (loaded on demand by the agent via `load_skill`):
+1. Physical Health → `src/futureself/skills/physical_health/SKILL.md`
+2. Mental Health → `src/futureself/skills/mental_health/SKILL.md`
+3. Financial → `src/futureself/skills/financial/SKILL.md`
+4. Social Relations → `src/futureself/skills/social_relations/SKILL.md`
+5. Geopolitics → `src/futureself/skills/geopolitics/SKILL.md`
+6. Time Management → `src/futureself/skills/time_management/SKILL.md`
+
+The `SkillsProvider` injects skill names and descriptions into the agent's system prompt at session start. The agent calls `load_skill("<name>")` to retrieve the full SKILL.md content for any domain it determines is relevant. No LLM call is consumed by skill loading — it is a tool call response.
 
 ## Coding Standards
-- Use Python modules per agent.
-- Load each system prompt from `prompts/`.
 - Public functions require type hints and docstrings.
 - Shared User Blueprint mutations must be controlled (orchestrator only).
-- All LLM traffic must go through `LLMProvider`.
-- Agent responses must include the **base contract** (see `futureself-spec.md` Section 5.1 for full details):
-  - `confidence: float` (0.0–1.0)
-  - `domain: str`
-  - `advice: str`
-  - `urgency: str` ("low" | "medium" | "high" | "critical")
-- Domain-specific extensions are allowed alongside the base fields.
-- Invalid or malformed model JSON must never crash a turn. Parsing must degrade gracefully to safe defaults.
+- Invalid or malformed model output must never crash a turn. Parsing must degrade gracefully to safe defaults.
 - Tests go in `tests/` mirroring `src/`.
-- Enable OpenTelemetry.
-- Run on the Cloud. Design agnostic of provider through abstraction interfaces. Initally focused on Microsoft stack.
+- Observability is provided by Azure AI Foundry (Application Insights) — no custom OTel code.
+- Run on the Cloud. Deploy to Azure AI Foundry Hosted Agent Service via `azure-ai-agentserver-agentframework` adapter.
 
-
-## Prompt File Conventions
-- Each prompt file in `prompts/` is plain Markdown, loadable directly as a system prompt.
-- Worker prompts follow a consistent structure:
-  **Role → Domain Expertise → Prioritization Framework → Guidelines → Output Format**
-- The orchestrator prompt has its own structure (Identity, Tone, Responsibilities, Conflict Resolution, Response Format).
-- All worker prompts must include an explicit coordination line naming which other agents to coordinate with through the orchestrator.
+## Skill File Conventions
+- Each skill file is `src/futureself/skills/<domain>/SKILL.md`.
+- SKILL.md files have YAML frontmatter with `name` and `description` fields, followed by the full domain system prompt in Markdown.
+- The `description` field (1–3 sentences) is what the agent reads upfront when deciding whether to load a skill.
+- Skill prompt body follows the structure: **Role → Domain Expertise → Prioritization Framework → Guidelines → Output Format**
+- `prompts/orchestrator.md` is NOT a skill — it is the agent's system prompt.
 
 ## Current Phase
-Phase 5 (The Data): User persistence, supplement tracking, biomarker history, blueprint data quality, conversation history population.
+Phase 6 (The Data): User persistence, supplement tracking, biomarker history, blueprint data quality, conversation history population.
 
-Phase 4 (Model router and cloud) is complete: ModelRouter with per-task provider routing, Azure AI Foundry provider with model-router support, containerized deployment on Azure Container Apps.
+Architecture refactoring is complete: single Claude Opus 4.6 agent with MAF SkillsProvider replaces the 6-stage supervisor-worker pipeline. LLM calls reduced from 7–11 to 1 per turn. Custom OTel removed in favor of Foundry Application Insights.
+
+Phase 5 (Observability) is complete: `LLMCallTrace` for every LLM call (model, tokens, latency), deterministic evaluation framework (`eval.py`), `simulate.py --eval/--traces/--eval-json` flags.
+
+Phase 4 (Model router and cloud) is complete: Azure AI Foundry provider, containerized deployment on Azure Container Apps.
 
 ## Explicit Do-Not-Do
 - No sub-agent direct user addressing.
 - No orchestrator bypass.
+- No multi-agent fan-out or critique rounds.
+- No custom OpenTelemetry instrumentation code.
 
 ## Key Files
 - `futureself-spec.md` — runtime architecture, contracts, rebuild checklist
-- `prompts/` — agent system prompts
-- `config/routing.yaml` — per-task model routing configuration
+- `prompts/orchestrator.md` — agent system prompt (identity, tone, responsibilities)
+- `src/futureself/skills/` — domain SKILL.md files
 - `tests/` — test suite mirroring `src/`
 - `scenarios/` — live test YAML scenarios
-- `infra/azure/main.bicep` — Azure Container Apps deployment template
+- `main.py` — Foundry Hosted Agent Service entrypoint
+- `infra/azure/main.bicep` — Azure deployment template
 
 ## CI/CD
 - **`ci.yml`** — runs on every push/PR to `main`: installs deps, runs `pytest tests/ -v`.
-- **`live.yml`** — manual dispatch only: requires `OPENAI_API_KEY` secret, runs live scenario tests.
-- **`deploy.yml`** — manual dispatch: builds Docker image, pushes to ACR, deploys to Azure Container Apps.
+- **`live.yml`** — manual dispatch only: requires Azure credentials, runs live scenario tests.
+- **`deploy.yml`** — manual dispatch: builds container, pushes to ACR, deploys to Foundry Hosted Agent Service.
 - `main` is the default branch. CI must pass before merging.
-- Secret `OPENAI_API_KEY` is only needed for live scenario tests.

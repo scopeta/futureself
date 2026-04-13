@@ -1,9 +1,7 @@
 name: motorcycle_purchase
 description: >
   User wants to buy a motorcycle for freedom and community.
-  Expected conflict: Physical Health (injury risk) vs Mental Health
-  (autonomy, joy, social connection) vs Financial (insurance, depreciation).
-  Tests the full critique-round pipeline with a 3-way conflict.
+  Tests multi-domain reasoning: physical safety, mental wellbeing, and financial tradeoffs.
 
 user_blueprint:
   bio:
@@ -21,9 +19,3 @@ turns:
   - user_message: >
       I've been thinking about buying a motorcycle. I want the freedom,
       and there's a great riding club near me. Is this a good idea?
-    expected_agents_consulted:
-      - physical_health
-      - mental_health
-      - financial
-    expect_conflict: true
-    conflict_area: injury risk vs autonomy and community

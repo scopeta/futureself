@@ -1,5 +1,4 @@
-"""LLM provider abstraction and model routing."""
-from futureself.llm.provider import LLMProvider
-from futureself.llm.router import ModelRouter, get_router, reset_router
+"""LLM client utilities for Azure AI Foundry."""
+from futureself.llm.azure_foundry_provider import build_anthropic_foundry_client
 
-__all__ = ["LLMProvider", "ModelRouter", "get_router", "reset_router"]
+__all__ = ["build_anthropic_foundry_client"]

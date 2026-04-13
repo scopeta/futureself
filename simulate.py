@@ -1,8 +1,11 @@
-"""CLI simulation harness for FutureSelf Phase 1 prompt testing.
+"""CLI simulation harness for FutureSelf scenario testing.
 
 Usage:
     python simulate.py --scenario motorcycle_purchase
     python simulate.py --scenario burnout_and_debt --verbose
+    python simulate.py --scenario motorcycle_purchase --eval
+    python simulate.py --scenario motorcycle_purchase --traces
+    python simulate.py --scenario motorcycle_purchase --eval-json
     python simulate.py --list
 """
 from __future__ import annotations
@@ -17,8 +20,16 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)  # reads .env from the project root; overrides system env vars
 
+from futureself.eval import (
+    ScenarioEval,
+    evaluate_scenario,
+    evaluate_turn,
+    format_report,
+    to_json,
+)
 from futureself.orchestrator import run_turn
 from futureself.schemas import (
+    LLMCallTrace,
     OrchestratorResult,
     UserBlueprint,
 )
@@ -46,8 +57,6 @@ def load_scenario(name: str) -> dict:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
-
-
 # ---------------------------------------------------------------------------
 # Output formatting
 # ---------------------------------------------------------------------------
@@ -65,33 +74,15 @@ def print_section(label: str, content: str) -> None:
     print(content)
 
 
-def print_agent_response(domain: str, resp, refined: bool = False) -> None:
-    tag = " (REFINED)" if refined else ""
-    print(f"\n  [{domain}]{tag}")
-    print(f"    confidence: {resp.confidence}")
-    print(f"    urgency:    {resp.urgency}")
-    print(f"    advice:     {resp.advice[:200]}{'...' if len(resp.advice) > 200 else ''}")
-    if resp.extensions:
-        print(f"    extensions: {resp.extensions}")
+def print_trace(trace: LLMCallTrace) -> None:
+    """Print a single LLM call trace."""
+    tokens = f"{trace.prompt_tokens}->{trace.completion_tokens}"
+    print(f"\n  -- LLM Call: {trace.task} --")
+    print(f"     Model: {trace.model_actual or trace.model_requested} | Tokens: {tokens} | Latency: {trace.latency_ms:.0f}ms")
 
 
-def print_result(result: OrchestratorResult, turn_num: int, verbose: bool) -> None:
+def print_result(result: OrchestratorResult, turn_num: int, verbose: bool, show_traces: bool) -> None:
     print_header(f"Turn {turn_num}")
-
-    print(f"\nAgents consulted: {result.agents_consulted}")
-    print(f"Conflict detected: {result.conflict_detected}")
-    if result.conflict_summary:
-        print(f"Conflict summary: {result.conflict_summary}")
-
-    if verbose:
-        print_section("Initial Responses", "")
-        for domain, resp in result.initial_responses.items():
-            print_agent_response(domain, resp)
-
-        if result.refined_responses:
-            print_section("Refined Responses (after critique)", "")
-            for domain, resp in result.refined_responses.items():
-                print_agent_response(domain, resp, refined=True)
 
     print_section("Future Self Reply", result.user_facing_reply)
 
@@ -100,45 +91,52 @@ def print_result(result: OrchestratorResult, turn_num: int, verbose: bool) -> No
             f"  - {f}" for f in result.updated_blueprint.inferred_facts
         ))
 
+    if show_traces and result.llm_traces:
+        print_section("LLM Traces", "")
+        for trace in result.llm_traces:
+            print_trace(trace)
+
 
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
 
-async def run_scenario(name: str, verbose: bool) -> None:
+async def run_scenario(name: str, verbose: bool, show_eval: bool, show_traces: bool, eval_json: bool) -> None:
     scenario = load_scenario(name)
-    print_header(f"Scenario: {scenario['name']}")
-    print(f"Description: {scenario.get('description', 'N/A')}")
+
+    if not eval_json:
+        print_header(f"Scenario: {scenario['name']}")
+        print(f"Description: {scenario.get('description', 'N/A')}")
 
     blueprint = UserBlueprint.from_dict(scenario.get("user_blueprint", {}))
+    turns_spec = scenario.get("turns", [])
+    results: list[OrchestratorResult] = []
 
-    for i, turn in enumerate(scenario.get("turns", []), start=1):
+    for i, turn in enumerate(turns_spec, start=1):
         user_msg = turn["user_message"].strip()
-        print(f"\n>> User: {user_msg}")
+        if not eval_json:
+            print(f"\n>> User: {user_msg}")
 
         result = await run_turn(blueprint, user_msg)
-        print_result(result, i, verbose)
+        results.append(result)
 
-        # Check expectations (soft — just log, don't fail)
-        expected_agents = turn.get("expected_agents_consulted")
-        if expected_agents:
-            actual = set(result.agents_consulted)
-            expected = set(expected_agents)
-            if actual != expected:
-                print(f"\n  [!] Expected agents {expected}, got {actual}")
-
-        expect_conflict = turn.get("expect_conflict")
-        if expect_conflict is not None and result.conflict_detected != expect_conflict:
-            print(
-                f"\n  [!] Expected conflict={expect_conflict}, "
-                f"got conflict={result.conflict_detected}"
-            )
+        if not eval_json:
+            print_result(result, i, verbose, show_traces)
 
         # Carry forward updated blueprint
         blueprint = result.updated_blueprint
 
-    print_header("Scenario Complete")
+    # Evaluation
+    scenario_eval = evaluate_scenario(scenario["name"], turns_spec, results)
+
+    if eval_json:
+        print(to_json([scenario_eval]))
+    elif show_eval:
+        print(format_report([scenario_eval]))
+
+    if not eval_json:
+        print_header("Scenario Complete")
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +146,7 @@ async def run_scenario(name: str, verbose: bool) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="FutureSelf Phase 1 simulation harness",
+        description="FutureSelf simulation harness",
     )
     parser.add_argument(
         "--scenario", "-s",
@@ -157,7 +155,23 @@ def main() -> None:
     parser.add_argument(
         "--verbose", "-v",
         action="store_true",
-        help="Print all agent responses, not just the final synthesis",
+        help="Print verbose output",
+    )
+    parser.add_argument(
+        "--eval", "-e",
+        action="store_true",
+        dest="show_eval",
+        help="Print structured evaluation report after the scenario",
+    )
+    parser.add_argument(
+        "--eval-json",
+        action="store_true",
+        help="Output only the evaluation as JSON (for piping to jq or saving)",
+    )
+    parser.add_argument(
+        "--traces", "-t",
+        action="store_true",
+        help="Print LLM call traces (model, tokens, latency)",
     )
     parser.add_argument(
         "--list", "-l",
@@ -177,7 +191,9 @@ def main() -> None:
         parser.print_help()
         return
 
-    asyncio.run(run_scenario(args.scenario, args.verbose))
+    asyncio.run(run_scenario(
+        args.scenario, args.verbose, args.show_eval, args.traces, args.eval_json,
+    ))
 
 
 if __name__ == "__main__":

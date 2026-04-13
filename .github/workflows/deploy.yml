@@ -7,6 +7,9 @@ on:
         description: "Docker image tag (default: git SHA)"
         required: false
         default: ""
+      futureself_model:
+        description: "Model deployment name in Foundry (e.g. claude-opus-4-6, gpt-4o)"
+        required: true
 
 env:
   ACR_NAME: ${{ secrets.ACR_LOGIN_SERVER }}
@@ -50,3 +53,12 @@ jobs:
           containerAppName: futureself
           resourceGroup: ${{ secrets.AZURE_RESOURCE_GROUP }}
           imageToDeploy: ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.tag }}
+
+      - name: Set environment variables on Container App
+        run: |
+          az containerapp update \
+            --name futureself \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --set-env-vars \
+              FUTURESELF_MODEL="${{ github.event.inputs.futureself_model }}" \
+              AZURE_FOUNDRY_ENDPOINT="${{ secrets.AZURE_FOUNDRY_ENDPOINT }}"

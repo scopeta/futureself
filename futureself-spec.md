@@ -1,16 +1,16 @@
-﻿# FutureSelf Functional Specification
+# FutureSelf Functional Specification
 
 > Status: Active Implementation Spec
-> Date: 2026-03-05
-> Scope: Rebuild-ready architecture and contracts (Phase 1–4 complete)
+> Date: 2026-04-13
+> Scope: Architecture and contracts after single-agent refactoring (Phases 1–5 complete)
 
 ---
 
 ## 1. Overview
 
-**FutureSelf is a supervisor-worker multi-agent system for longevity guidance.**
-**The only user-facing component is the Future Self Synthesizer (orchestrator).**
-Worker agents are internal advisors.
+**FutureSelf is a single-agent longevity guidance system.**
+**The only user-facing component is the Future Self Synthesizer.**
+Domain expertise is delivered via six skills loaded on demand — not via parallel sub-agents.
 
 ### Core goals
 - **Holistic:** Health is not just physical; it's mental, financial, social, and environmental.
@@ -18,64 +18,49 @@ Worker agents are internal advisors.
 - **Long-term:** The interaction model is designed for a lifelong relationship, not transactional queries.
 - **Persona-consistent synthesis** as the user's future self.
 - **Controlled blueprint updates** owned by orchestrator only.
-- **LLM-provider agnostic orchestration.**
+- **Minimal LLM calls:** 1 Claude Opus 4.6 call per turn plus tool calls for skill loading (no extra completions).
 
 ---
 
 ## 2. Architecture Overview
 
-The system follows a **Reactive Supervisor** pattern with an asynchronous memory loop.
+Single-agent pipeline with MAF SkillsProvider for progressive domain disclosure.
 
 ```mermaid
 flowchart TD
-    User([User Message]) --> Select[Select Agents — LLM routing call]
-    Select --> Filter[Filter to known registry keys]
-    Filter -->|empty| Fallback[Fallback to mental_health]
-    Filter -->|valid keys| FanOut
+    User([User Message + UserBlueprint]) --> Agent
 
-    Fallback --> FanOut[Fan-out concurrently]
+    subgraph Agent [ChatAgent — Claude Opus 4.6 via Azure AI Foundry]
+        System[System: prompts/orchestrator.md]
+        Skills[SkillsProvider injects skill names + descriptions at session start]
+        Reason[Claude reasons → calls load_skill for relevant domains]
+        Skill1[load_skill physical_health → returns SKILL.md body]
+        Skill2[load_skill mental_health → returns SKILL.md body]
+        Synthesize[Synthesizes Future Self reply in character]
+    end
 
-    FanOut --> Health[Physical Health]
-    FanOut --> Mental[Mental Health]
-    FanOut --> Finance[Financial]
-    FanOut --> Social[Social Relations]
-    FanOut --> Geo[Geopolitics]
-    FanOut --> TimeMgmt[Time Management]
-
-    Health & Mental & Finance & Social & Geo & TimeMgmt --> Responses[Initial Responses]
-
-    Responses --> ConflictCheck{Conflict Detected?}
-
-    ConflictCheck -->|Yes| Critique[Critique Rounds — max 2]
-    Critique --> Final[Final Responses — initial + refined]
-    ConflictCheck -->|No| Final
-
-    Final --> Synthesis[Synthesize Persona Response]
-    Final -.->|concurrent| Extractor[Fact Extractor]
-
-    Synthesis --> Reply([User-Facing Reply])
-    Extractor -.-> Blueprint[(Updated Blueprint)]
+    Agent --> Reply([User-Facing Reply])
+    Reply -.-> Facts[extract_facts_simple — regex, no LLM call]
+    Facts -.-> Blueprint[(Updated Blueprint)]
 ```
+
+**LLM calls per turn:** 1 completion + N `load_skill` tool calls (N = 0–3 relevant domains). Skill loading consumes no additional completions.
 
 ---
 
-## 3. Agent Set
+## 3. Skills
 
-| # | Agent | Registry key | Prompt file |
-|---|-------|-------------|-------------|
-| 1 | Future Self Synthesizer (orchestrator) | — | `prompts/orchestrator.md` |
-| 2 | Physical Health | `physical_health` | `prompts/physical_health.md` |
-| 3 | Mental Health | `mental_health` | `prompts/mental_health.md` |
-| 4 | Financial | `financial` | `prompts/financial.md` |
-| 5 | Social Relations | `social_relations` | `prompts/social_relations.md` |
-| 6 | Geopolitics | `geopolitics` | `prompts/geopolitics.md` |
-| 7 | Time Management | `time_management` | `prompts/time_management.md` |
+| # | Skill | Key | File |
+|---|-------|-----|------|
+| 1 | Physical Health | `physical_health` | `src/futureself/skills/physical_health/SKILL.md` |
+| 2 | Mental Health | `mental_health` | `src/futureself/skills/mental_health/SKILL.md` |
+| 3 | Financial | `financial` | `src/futureself/skills/financial/SKILL.md` |
+| 4 | Social Relations | `social_relations` | `src/futureself/skills/social_relations/SKILL.md` |
+| 5 | Geopolitics | `geopolitics` | `src/futureself/skills/geopolitics/SKILL.md` |
+| 6 | Time Management | `time_management` | `src/futureself/skills/time_management/SKILL.md` |
 
-### Agent Intent Snapshot
+### Domain Intent Snapshot
 
-Purpose: keep core domain scope visible in the spec even if prompt files evolve.
-
-- **Future Self Synthesizer:** Persona-consistent user-facing synthesis. Multi-domain routing, conflict handling, and final tradeoff decisions.
 - **Physical Health:** Nutrition, exercise, sleep, biomarkers, and medical-risk-aware longevity advice.
 - **Mental Health:** Stress resilience, emotional regulation, crisis signal awareness, and behavioral durability.
 - **Financial:** Long-horizon planning, risk control, healthcare affordability, and stress-reducing simplicity.
@@ -89,22 +74,19 @@ Purpose: keep core domain scope visible in the spec even if prompt files evolve.
 
 Single-turn flow (`run_turn`):
 
-1. **Select** agents with a routing LLM call (targets 2–3 agents).
-2. **Filter** to known `AGENT_REGISTRY` keys.
-3. If empty after filtering, **fallback** to `["mental_health"]`.
-4. **Fan-out** selected workers concurrently (`asyncio.gather`).
-5. **Detect** conflicts from worker advice via LLM call.
-6. If conflict exists, **run critique rounds** for implicated workers.
-7. **Cap critique rounds** at `MAX_CRITIQUE_ROUNDS = 2`.
-8. **Build** final response set (`initial + refined`).
-9. **Start** fact extraction task (`asyncio.create_task`).
-10. **Synthesize** user-facing Future Self reply.
-11. **Await** fact extraction result and merge inferred facts.
-12. **Return** `OrchestratorResult`.
+1. **Build** user context from `UserBlueprint` + `user_message` (conversation history, inferred facts, profile).
+2. **Run** the MAF ChatAgent with `SkillsProvider` (Claude Opus 4.6 via Azure AI Foundry).
+   - SkillsProvider injects skill names + descriptions at session start.
+   - Claude reads the turn context, decides which skills are relevant, calls `load_skill` for each.
+   - SkillsProvider returns the full SKILL.md body — no LLM call consumed.
+   - Claude synthesizes the Future Self reply in character.
+3. **Extract** new facts from the reply via `_extract_facts_simple` (regex, no LLM call).
+4. **Append** turn to conversation history and merge new facts into blueprint (immutable copy).
+5. **Return** `OrchestratorResult`.
 
 Notes:
-- **Fact extraction runs concurrently** with synthesis (latency optimization).
-- **Current flow does not hard-stop on crisis signals as this solution is focused on longevity rather than crisis guidance.** 
+- Fact extraction is synchronous and regex-based — no additional LLM cost.
+- `_agent` parameter in `run_turn` allows mock injection for tests without Azure credentials.
 
 ---
 
@@ -112,38 +94,9 @@ Notes:
 
 All contracts live in `src/futureself/schemas.py`.
 
-### 5.1 Worker Base Contract (`AgentResponse`)
+### 5.1 User Blueprint (`UserBlueprint`)
 
-Required fields:
-- `confidence: float` — normalized to `[0.0, 1.0]`
-- `domain: str`
-- `advice: str`
-- `urgency: Literal["low", "medium", "high", "critical"]`
-
-Internal fields:
-- `is_refined: bool` — set by critique rounds, not by the model
-- `extensions: dict[str, Any]` — captures all non-base JSON keys from model output
-
-Normalization and fallback:
-- Invalid/missing confidence → default `0.5`.
-- Invalid/missing urgency → default `"low"`.
-- Domain field is enforced by module domain key, not trusted from model payload.
-
-Known domain extensions:
-- `physical_health`: `contraindications`
-- `social_relations`: `isolation_risk`
-- `time_management`: `proposed_schedule_change`
-
-### 5.2 Critique Context (`CritiqueContext`)
-
-- `conflicting_advice: str`
-- `concern_area: str`
-- `orchestrator_question: str`
-- `round_number: int`
-
-### 5.3 User Blueprint (`UserBlueprint`)
-
-Frozen Pydantic model (`frozen=True`). Immutable for workers; orchestrator returns an updated copy via `model_copy` when new facts are extracted.
+Frozen Pydantic model (`frozen=True`). Immutable for all callers; the orchestrator returns an updated copy via `model_copy`.
 
 Top-level fields:
 - `bio: BioData`
@@ -193,202 +146,187 @@ Supporting types:
 - `role: Literal["user", "assistant"]`
 - `content: str`
 
-### 5.4 Turn Result (`OrchestratorResult`)
+### 5.2 LLM Call Trace (`LLMCallTrace`)
 
-- `agents_consulted: list[str]`
-- `initial_responses: dict[str, AgentResponse]`
-- `refined_responses: dict[str, AgentResponse]`
-- `conflict_detected: bool`
-- `conflict_summary: str`
+- `task: str` — e.g. `"orchestrator.run_turn"`
+- `model_requested: str`
+- `model_actual: str | None` — populated if provider reports actual model used
+- `prompt_tokens: int`
+- `completion_tokens: int`
+- `latency_ms: float`
+
+### 5.3 Turn Result (`OrchestratorResult`)
+
 - `user_facing_reply: str`
 - `updated_blueprint: UserBlueprint`
+- `llm_traces: list[LLMCallTrace]`
 
 ---
 
-## 6. LLM Provider Abstraction
+## 6. MAF Skills and Agent Client
 
-### Canonical interface
+### SkillsProvider (Microsoft Agent Framework)
 
-```
-class LLMProvider(ABC):
-    async complete(system: str, user: str, response_format: dict | None = None) -> str
-    @classmethod get_default() -> LLMProvider
-```
+`SkillsProvider(skill_paths=Path("src/futureself/skills"))` discovers all `SKILL.md` files and:
+1. Injects a `load_skill` tool definition into the agent's tool list.
+2. At session start, appends a short skills manifest to the system prompt (~100 tokens/skill): name + description only.
+3. Handles `load_skill("<name>")` tool calls by returning the full SKILL.md body.
 
-### Provider selection
+Claude reads the manifest and autonomously decides which skills to load based on the user message.
 
-Environment variables:
-- `FUTURESELF_LLM_PROVIDER` — `openai` | `anthropic` (alias: `claude`) | `google` (alias: `gemini`) | `azure_foundry` (alias: `azure`)
-- `FUTURESELF_LLM_MODEL` — overrides provider default model
+### AzureAIAgentClient
 
-| Provider | Env key for API key | Default model | Concurrency control |
-|----------|-------------------|---------------|-------------------|
-| OpenAI | `OPENAI_API_KEY` | `gpt-5-nano` | `OPENAI_MAX_CONCURRENT` (default 4) |
-| Anthropic | `ANTHROPIC_API_KEY` | `claude-haiku-4-5-20251001` | — |
-| Google Gemini | `GOOGLE_API_KEY` / `GEMINI_API_KEY` | `gemini-2.0-flash` | `GEMINI_RPM` (default 15) |
-| Azure AI Foundry | `AZURE_FOUNDRY_API_KEY` | `model-router` | `AZURE_FOUNDRY_MAX_CONCURRENT` (default 10) |
-
-Azure AI Foundry's `model-router` deployment automatically selects the best underlying model per-prompt based on task complexity (Balanced / Cost / Quality modes configured in the Foundry portal). The response's `model` field reveals which model was actually used.
-
-### Model routing (per-task provider selection)
-
-A `ModelRouter` class routes each pipeline task to a specific `LLMProvider` instance based on a YAML configuration (`config/routing.yaml` or path in `FUTURESELF_ROUTING_CONFIG` env var).
-
-```
-RouterConfig:
-  default_provider: str           # key into providers dict
-  providers: dict[str, ProviderEntry]
-  tasks: dict[str, TaskRoute]     # per-task overrides (optional)
-```
-
-Task keys: `orchestrator.select_agents`, `orchestrator.detect_conflicts`, `orchestrator.synthesise`, `orchestrator.extract_facts`, `agent.<domain>`.
-
-When no routing config exists, the system falls back to single-provider mode via `LLMProvider.get_default()`.
-
-### Provider hardening requirements
-
-- Env-based numeric limits must be parsed safely with sane defaults (invalid/zero → fallback).
-- Empty vendor responses must not crash the pipeline (return `""`).
-- Anthropic: `response_format={"type": "json_object"}` is handled by appending a JSON-only instruction to the user content (no native param).
-- Google: `response_format={"type": "json_object"}` maps to `response_mime_type = "application/json"`. Includes retry logic (3 attempts, backoff on HTTP 429).
-
----
-
-## 7. Worker Module Conventions
-
-Worker modules are thin wrappers:
 ```python
-from futureself.agents._base import make_run
-run = make_run("<domain>")
+from agent_framework.azure import AzureAIAgentClient
+from azure.identity.aio import DefaultAzureCredential
+
+client = AzureAIAgentClient(
+    project_endpoint=AZURE_FOUNDRY_ENDPOINT,
+    model_deployment_name="claude-opus-4-6",
+    credential=DefaultAzureCredential(),
+)
+agent = client.as_agent(
+    name="FutureSelf",
+    instructions=orchestrator_prompt,
+    context_providers=[skills_provider],
+)
 ```
 
-Shared logic in `_base.py`:
-- `make_run(domain)` — factory returning an `async run()` coroutine. Resolves prompt from `prompts/{domain}.md`.
-- `build_user_context(blueprint, user_message, critique_context)` — assembles user turn text including optional critique block.
-- `parse_response(raw, domain, is_refined)` — best-effort JSON parse, normalization, extension capture.
+### AnthropicFoundry (direct client, for non-hosted use)
+
+```python
+from anthropic import AnthropicFoundry
+from azure.identity import DefaultAzureCredential, get_bearer_token_provider
+
+token_provider = get_bearer_token_provider(DefaultAzureCredential(), "https://ai.azure.com/.default")
+client = AnthropicFoundry(azure_ad_token_provider=token_provider, base_url=endpoint)
+```
+
+Authentication: Azure Entra ID via `DefaultAzureCredential` (managed identity in production, developer credentials locally).
 
 ---
 
-## 8. Prompt Structure Conventions
+## 7. Skill File Conventions
 
-Worker prompt structure:
-- Role
-- Domain Expertise
-- Prioritization Framework
-- Guidelines
-- Output Format
+Each skill lives at `src/futureself/skills/<domain>/SKILL.md`:
 
-Orchestrator prompt structure:
-- Identity
-- Tone
-- Responsibilities
-- Conflict Resolution
-- Response Format
+```markdown
+---
+name: physical_health
+description: >
+  Analyze physical health, fitness, biomarkers, medications, and longevity protocols.
+  Use when the user asks about exercise, sleep, nutrition, supplements, lab results,
+  aging biomarkers, or any body-related longevity topic.
+---
 
-All worker prompts include an explicit coordination line naming agents to coordinate with.
+# Physical Health — "The Biological Guardian"
+...domain system prompt content...
+```
+
+Skill prompt body structure: **Role → Domain Expertise → Prioritization Framework → Guidelines → Output Format**
+
+`prompts/orchestrator.md` is not a skill — it is the agent's system prompt and is NOT processed by `SkillsProvider`.
 
 ---
 
-## 9. Reliability and Fallback Rules
-
-**All JSON parsing from model output must be best-effort and non-fatal.**
-
-| Parse failure | Fallback |
-|--------------|----------|
-| Agent selection | `[]` (then orchestrator fallback to `["mental_health"]`) |
-| Conflict detection | No conflict (`False, "", []`) |
-| Fact extraction | No blueprint change (return original) |
-| Worker response | Safe default `AgentResponse` (`confidence=0.5`, `advice=""`, `urgency="low"`) |
+## 8. Reliability and Fallback Rules
 
 **No single malformed LLM response may crash a turn.**
 
+| Failure | Fallback |
+|---------|----------|
+| Empty agent reply | Return `OrchestratorResult` with `user_facing_reply=""` |
+| Fact extraction error | Return original blueprint unchanged |
+| Missing `AZURE_FOUNDRY_ENDPOINT` | `_build_agent` raises at call time, not at import |
+
+`agent_framework` imports are lazy (inside `_build_agent`) so the module loads in local dev without the cloud SDK installed.
+
 ---
 
-## 10. Testing Requirements
+## 9. Testing Requirements
 
-### 10.1 Unit/Integration (mocked LLM)
+### 9.1 Unit/Integration (mocked MAF agent)
 
 Must cover:
-- Valid routing, unknown agent filtering, empty fallback.
-- Parallel fan-out behavior.
-- Conflict/no-conflict paths.
-- Critique loop capped to configured max rounds.
+- `run_turn` returns `OrchestratorResult` with correct fields.
 - Blueprint immutability across turn.
-- Fact extraction merge + dedupe behavior.
-- Malformed JSON fallback in selection, conflict, facts, and worker parsing.
-- Provider edge cases (invalid env numeric settings, empty provider payloads).
-- Agent contract compliance across all 6 domains (parametrized).
-- Extension field capture per domain.
+- Conversation history appended with correct `ConversationTurn` objects.
+- LLM trace recorded with correct task, model, and non-negative latency.
+- `_extract_facts_simple`: age extraction, deduplication, empty reply.
+- `_build_user_context`: includes user message, includes inferred facts.
+- Empty model reply handled gracefully.
 
-### 10.2 Live Scenario Tests
+Mock pattern:
+```python
+def _mock_agent(reply: str) -> MagicMock:
+    result = MagicMock()
+    result.value = reply
+    agent = MagicMock()
+    agent.create_session = AsyncMock(return_value=MagicMock())
+    agent.run = AsyncMock(return_value=result)
+    return agent
+```
+
+### 9.2 Live Scenario Tests
 
 - Marker-gated (`live`) and excluded by default (`addopts = "-m 'not live'"`).
 - Scenario files in `scenarios/*.yaml`.
-- Each scenario defines: `name`, `blueprint` (bio/psych/context), and one or more `turns` with `user_message`, `expect_agents`, `expect_conflict`.
+- Each scenario defines: `name`, `user_blueprint`, and `turns` with `user_message`.
 - Multi-turn scenarios carry `updated_blueprint` forward between turns.
-- Hard assertions: non-empty reply, at least 1 agent consulted.
-- Soft assertions (logged, not fatal): expected agents vs actual, expected conflict vs actual.
+- Hard assertions: non-empty reply.
 
 ---
 
-## 11. Implementation Roadmap
+## 10. Implementation Roadmap
 
 > **Decision Rule:** Build the intelligence before the interface.
 
 **Phase 1: Agent Laboratory** — *Complete*
-- Prompt manifest for all 7 agents.
-- Worker agent implementations.
-- Text-based simulation for individual agent testing.
-- Scenario-driven validation (e.g., motorcycle purchase → Health vs Mental vs Finance conflict).
 
 **Phase 2: The Orchestrator** — *Complete*
-- Full supervisor flow (`run_turn`): routing, fan-out, conflict detection, critique loop, synthesis.
-- Provider abstraction with three concrete backends (OpenAI, Anthropic, Google).
-- Fact extraction into inferred facts.
-- Mock-driven and live-capable test suites.
 
 **Phase 3: The Initial Interface** — *Complete*
-- Basic Web UI for standard user flow.
-- First-time user set up flow to capture basic blueprint.
 
-**Phase 4: Model router and cloud** — *Complete*
-- `ModelRouter` routes each pipeline task to a configured provider+model via YAML config.
-- Azure AI Foundry provider with `model-router` support (auto-selects best model per-prompt).
-- Per-agent model overrides via `config/routing.yaml`.
-- Containerized deployment: Dockerfile, docker-compose, Azure Container Apps (Bicep IaC).
-- Azure Monitor telemetry exporter (opt-in via `APPLICATIONINSIGHTS_CONNECTION_STRING`).
-- CI/CD: deploy workflow via GitHub Actions to ACR + Azure Container Apps.
+**Phase 4: Model Router and Cloud** — *Complete*
 
+**Phase 5: Observability** — *Complete*
 
-**Phase 5: The Data**
+**Architecture Refactoring** — *Complete*
+- Replaced 6-stage supervisor-worker pipeline (7–11 LLM calls/turn) with a single Claude Opus 4.6 agent.
+- MAF `SkillsProvider` delivers progressive domain disclosure via `SKILL.md` files.
+- `OrchestratorResult` simplified: removed `agents_consulted`, `initial_responses`, `refined_responses`, `conflict_detected`, `conflict_summary`, `AgentResponse`, `CritiqueContext`.
+- Custom OpenTelemetry code removed; Foundry Application Insights used for observability.
+- Deployment updated to Foundry Hosted Agent Service (`main.py` + `azure-ai-agentserver-agentframework`).
+- LLM calls: 7–11 → 1 per turn.
+
+**Phase 6: The Data** — *Active*
 - User persistence (saving blueprint state across sessions).
 - Supplement tracking and biomarker measurement history.
 - Blueprint data quality verification and context drift flagging.
 - Conversation history population.
 
-**Phase 6: The Advanced Interface**
+**Phase 7: The Advanced Interface**
 - WhatsApp integration as primary conversational interface.
 - Web UI includes blueprint management, data quality flags, and lab test/exam uploads.
-- Both UIs has a first-time user set up to capture basic blueprint.
 
-**Phase 7: Enhance Agents** *(Continuous)*
-- Specialized tools to expand agent capabilities.
+**Phase 8: Enhance Skills** *(Continuous)*
+- Specialized tools to expand skill capabilities.
 - Advice evaluation and quality feedback loops.
 
-**Phase 8: Proactive Advice** *(Optional)*
+**Phase 9: Proactive Advice** *(Optional)*
 - Proactive analysis and recommendations.
 - Daily check-in capture.
 
 ---
 
-## 12. Rebuild Checklist
+## 11. Rebuild Checklist
 
 A rebuild from scratch is valid only if all are true:
 
 1. **`run_turn` implements the flow in Section 4.**
-2. **All worker outputs satisfy the base contract in Section 5.1.**
-3. **All LLM calls use `LLMProvider` interface from Section 6.**
-4. **Worker modules use `make_run(domain)` pattern from Section 7.**
-5. **Prompts follow structure conventions from Section 8.**
-6. **JSON parse resilience follows Section 9.**
-7. **Tests from Section 10 are present and passing.**
+2. **All domain expertise is delivered via SKILL.md files following Section 7 conventions.**
+3. **`_agent` parameter supports mock injection for tests.**
+4. **Blueprint immutability is enforced: orchestrator uses `model_copy`, never mutates.**
+5. **LLM call trace is recorded for every `run_turn` call.**
+6. **Empty model replies do not crash a turn.**
+7. **Tests from Section 9 are present and passing.**

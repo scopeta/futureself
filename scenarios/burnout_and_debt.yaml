@@ -1,10 +1,8 @@
 name: burnout_and_debt
 description: >
   User is burned out at work and has credit card debt. Asks whether to
-  take on more freelance work or rest. Expected conflict: Mental Health
-  (rest is non-negotiable) vs Financial (debt payoff urgency) vs
-  Time Management (no schedule room). Tests urgency escalation and the
-  mortality-priority conflict resolution rule.
+  take on more freelance work or rest. Tests urgency escalation and
+  the mortality-priority tradeoff between rest and financial pressure.
 
 user_blueprint:
   bio:
@@ -24,9 +22,3 @@ turns:
       I'm burned out and behind on my finances. I have about $12,000 in
       credit card debt. Should I take on more freelance work to pay it
       off faster, or should I just rest?
-    expected_agents_consulted:
-      - mental_health
-      - financial
-      - time_management
-    expect_conflict: true
-    conflict_area: rest vs more work to pay off debt

@@ -1,73 +1,19 @@
-"""Data contracts for the FutureSelf multi-agent system.
+"""Data contracts for the FutureSelf agent system.
 
-All agent modules and the orchestrator import from this module.
+All modules and the orchestrator import from this module.
 The schemas here are the single source of truth for inter-component
 data exchange.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
 # ---------------------------------------------------------------------------
-# AgentResponse — base contract returned by every worker agent
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class AgentResponse:
-    """Structured response from a worker agent. This is an internal memo to the
-    orchestrator — never shown directly to the user."""
-
-    confidence: float
-    """Confidence in the advice, from 0.0 (very uncertain) to 1.0 (highly confident)."""
-
-    domain: str
-    """Snake-case domain identifier, e.g. 'physical_health'."""
-
-    advice: str
-    """Internal memo to the orchestrator. Must NOT address the user directly."""
-
-    urgency: Literal["low", "medium", "high", "critical"]
-    """How urgently the orchestrator should weight this advice."""
-
-    is_refined: bool = False
-    """True when this response came from a critique round."""
-
-    extensions: dict[str, Any] = field(default_factory=dict)
-    """Domain-specific extra fields (e.g., contraindications,
-    proposed_schedule_change). Captured from the prompt output without
-    modifying the base contract."""
-
-
-# ---------------------------------------------------------------------------
-# CritiqueContext — passed to agents during conflict-resolution rounds
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class CritiqueContext:
-    """Context the orchestrator provides when asking an agent to refine its advice
-    in light of a conflict with another domain."""
-
-    conflicting_advice: str
-    """The other domain's advice that conflicts with this agent's recommendation."""
-
-    concern_area: str
-    """The specific area of tension identified by the orchestrator."""
-
-    orchestrator_question: str
-    """The specific compromise or clarification the orchestrator is asking for."""
-
-    round_number: int
-    """1-based critique round counter. Capped at MAX_CRITIQUE_ROUNDS."""
-
-
-# ---------------------------------------------------------------------------
-# UserBlueprint — the user's persistent profile (read-only for agents)
+# UserBlueprint — the user's persistent profile
 # ---------------------------------------------------------------------------
 
 
@@ -91,7 +37,7 @@ class ExamRecord:
     raw_text: str | None      # extracted text from report (for future vector indexing)
 
 
-@dataclass  
+@dataclass
 class Supplement:
     """A supplement currently taken or previously taken."""
     name: str            # e.g. "Creatine Monohydrate"
@@ -99,6 +45,7 @@ class Supplement:
     started: str | None  # ISO-8601
     stopped: str | None  # ISO-8601, None = still taking
     reason: str | None   # why started/stopped
+
 
 class BioData(BaseModel):
     """Biological and medical information."""
@@ -142,9 +89,8 @@ class ConversationTurn(BaseModel):
 
 
 class UserBlueprint(BaseModel):
-    """The user's persistent, read-only profile passed to every agent.
+    """The user's persistent profile passed to the agent each turn.
 
-    Agents must treat this as immutable.
     The orchestrator is responsible for extracting facts and creating an
     updated blueprint after each turn.
     """
@@ -172,31 +118,42 @@ class UserBlueprint(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# OrchestratorResult — the full result of one orchestration turn
+# LLMCallTrace — record of one agent turn
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class LLMCallTrace:
+    """Record of one agent turn — metadata for observability and eval."""
+
+    task: str
+    """Identifies the pipeline step, e.g. ``"orchestrator.run_turn"``."""
+
+    model_requested: str
+    """The model identifier sent to the provider."""
+
+    model_actual: str = ""
+    """The model that actually served the request."""
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    latency_ms: float = 0.0
+
+
+# ---------------------------------------------------------------------------
+# OrchestratorResult — the full result of one turn
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class OrchestratorResult:
-    """Everything produced in one turn of the orchestrator pipeline."""
-
-    agents_consulted: list[str]
-    """Domain keys of agents that ran in this turn."""
-
-    initial_responses: dict[str, AgentResponse]
-    """Responses from the initial fan-out, keyed by domain."""
-
-    refined_responses: dict[str, AgentResponse]
-    """Responses after critique rounds, if any. Empty if no conflict was detected."""
-
-    conflict_detected: bool
-    """Whether the orchestrator identified cross-domain conflicts."""
-
-    conflict_summary: str
-    """Plain-language description of the conflict. Empty string if none."""
+    """Everything produced in one turn of the orchestrator."""
 
     user_facing_reply: str
     """The synthesized reply in the Future Self persona, ready to show to the user."""
 
     updated_blueprint: UserBlueprint
     """A new UserBlueprint with newly extracted facts merged into inferred_facts."""
+
+    llm_traces: list[LLMCallTrace] = field(default_factory=list)
+    """LLM call records for this turn (for eval and observability)."""

@@ -1,10 +1,8 @@
 name: relocation_decision
 description: >
   User lives in a high-pollution city with strong family ties. Asks about
-  relocating. Expected agents: Geopolitics (PM2.5 data, healthcare access),
-  Social Relations (family network disruption), Financial (cost of living delta).
-  Tradeoff flags should be complementary, not contradictory — tests that the
-  orchestrator does NOT manufacture false conflicts.
+  relocating. Tests multi-domain reasoning across geopolitics (PM2.5, healthcare
+  access), social relations (family network), and financial (cost of living delta).
 
 user_blueprint:
   bio:
@@ -25,9 +23,3 @@ turns:
       I've been reading about how bad the air pollution is here. The PM2.5
       is off the charts in winter. Should I seriously think about moving?
       My whole family is here though.
-    expected_agents_consulted:
-      - geopolitics
-      - social_relations
-      - financial
-    expect_conflict: true
-    conflict_area: ""

@@ -38,3 +38,24 @@ def get_token(request: Request) -> str | None:
     if token and token in request.app.state.sessions:
         return token
     return None
+
+
+def get_blueprint_from_bearer(request: Request) -> UserBlueprint | None:
+    """Return the session's blueprint from an ``Authorization: Bearer`` header.
+
+    Used by the JSON API layer (React SPA) instead of cookie-based auth.
+    """
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return None
+    token = auth[len("Bearer "):]
+    return request.app.state.sessions.get(token)
+
+
+def get_token_from_bearer(request: Request) -> str | None:
+    """Return the validated token from an ``Authorization: Bearer`` header, or ``None``."""
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return None
+    token = auth[len("Bearer "):]
+    return token if token in request.app.state.sessions else None

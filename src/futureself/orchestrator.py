@@ -1,462 +1,170 @@
 """Orchestrator — the Future Self Synthesizer.
 
-Implements the reactive pipeline:
-  User message
-    → select agents (LLM call)
-    → fan-out to workers concurrently
-    → detect conflicts (LLM call)
-    → optional critique rounds
-    → synthesise user-facing reply (LLM call)
-    → extract facts into blueprint (LLM call)
+Single-agent pipeline using Microsoft Agent Framework (MAF):
+  User message + UserBlueprint
+    → ChatAgent (Claude Opus 4.6 via Azure AI Foundry)
+      with SkillsProvider (6 domain SKILL.md files)
+    → Claude loads relevant skills on demand via load_skill tool
+    → Synthesizes Future Self reply
+    → Facts extracted from reply (regex, no extra LLM call)
+    → Updated UserBlueprint returned
 """
 from __future__ import annotations
 
-import asyncio
-import json
+import os
+import re
+import time
 from pathlib import Path
-from typing import Any
 
-from futureself.agents import AGENT_REGISTRY, MAX_CRITIQUE_ROUNDS
-from futureself.llm.provider import LLMProvider
-from futureself.llm.router import ModelRouter, get_router
-from futureself.schemas import (
-    AgentResponse,
-    CritiqueContext,
-    OrchestratorResult,
-    UserBlueprint,
-)
-from futureself.telemetry import set_span_attributes, span
+from futureself.schemas import ConversationTurn, LLMCallTrace, OrchestratorResult, UserBlueprint
 
+_SKILLS_DIR = Path(__file__).parent / "skills"
 _ORCHESTRATOR_PROMPT_PATH = Path(__file__).parent.parent.parent / "prompts" / "orchestrator.md"
+
+
+def _resolve_model() -> str:
+    """Return the model name from the ``FUTURESELF_MODEL`` environment variable.
+
+    Raises:
+        ValueError: If the variable is not set.
+    """
+    model = os.getenv("FUTURESELF_MODEL", "")
+    if not model:
+        raise ValueError(
+            "FUTURESELF_MODEL is required. Set it to the model deployment name "
+            "for your Foundry project (e.g. 'claude-opus-4-6', 'gpt-4o')."
+        )
+    return model
 
 
 def _load_orchestrator_prompt() -> str:
     return _ORCHESTRATOR_PROMPT_PATH.read_text(encoding="utf-8")
 
 
-def _parse_json_object(raw: str) -> dict[str, Any]:
-    """Best-effort JSON object parser for model output."""
-    try:
-        parsed = json.loads(raw)
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
+def _build_user_context(blueprint: UserBlueprint, user_message: str) -> str:
+    """Render the user context passed to the agent each turn."""
+    history_lines = []
+    for turn in blueprint.conversation_history[-10:]:  # last 10 turns
+        history_lines.append(f"{turn.role.upper()}: {turn.content}")
 
-
-# ---------------------------------------------------------------------------
-# 1. Agent selection
-# ---------------------------------------------------------------------------
-
-
-def _build_selection_system() -> str:
-    agent_keys = ", ".join(sorted(AGENT_REGISTRY.keys()))
-    return f"""\
-You are a routing component inside a multi-agent longevity advisor.
-Given a user's message and their profile, decide which 2-3 specialist
-agents should be consulted.
-
-Available agents (use exactly these keys):
-  {agent_keys}
-
-Return ONLY a JSON object:
-{{
-  "selected_agents": ["agent_key", ...]
-}}
-"""
-
-
-async def _select_agents(
-    blueprint: UserBlueprint,
-    user_message: str,
-    provider: LLMProvider,
-) -> list[str]:
-    """Ask the LLM to select relevant agents for the user message."""
-    user_content = (
-        f"USER BLUEPRINT:\n{blueprint.model_dump_json(indent=2)}\n\n"
-        f"USER MESSAGE:\n{user_message}"
-    )
-    raw = await provider.complete(
-        system=_build_selection_system(),
-        user=user_content,
-        response_format={"type": "json_object"},
-    )
-    data = _parse_json_object(raw)
-    selected = data.get("selected_agents", [])
-    if not isinstance(selected, list):
-        selected = []
-
-    # Filter to known agents only
-    return [a for a in selected if a in AGENT_REGISTRY]
-
-
-# ---------------------------------------------------------------------------
-# 2. Parallel fan-out
-# ---------------------------------------------------------------------------
-
-
-async def _fan_out(
-    agent_keys: list[str],
-    blueprint: UserBlueprint,
-    user_message: str,
-    router: ModelRouter,
-) -> dict[str, AgentResponse]:
-    """Run selected agents in parallel and collect their responses."""
-
-    async def _call(key: str) -> tuple[str, AgentResponse]:
-        run_fn = AGENT_REGISTRY[key]
-        response = await run_fn(
-            blueprint, user_message, provider=router.get_provider(f"agent.{key}"),
-        )
-        return key, response
-
-    results = await asyncio.gather(*[_call(k) for k in agent_keys])
-    return dict(results)
-
-
-# ---------------------------------------------------------------------------
-# 3. Conflict detection
-# ---------------------------------------------------------------------------
-
-_CONFLICT_SYSTEM = """\
-You are a conflict detection component inside a multi-agent longevity advisor.
-You will receive a set of agent responses. Your PRIMARY job is to compare the
-actual advice each agent gave and determine whether following all of them
-together creates genuine tensions or trade-offs.
-
-A conflict exists when:
-- One agent's core recommendation directly CONTRADICTS or works AGAINST
-  another agent's core recommendation (e.g., "rest more" vs "work extra
-  hours to pay debt").
-- Following one agent's advice would require SACRIFICING a key benefit
-  from another agent's advice (e.g., "buy the motorcycle for joy" vs
-  "avoid the motorcycle for safety").
-- The advice from different agents competes for the same limited
-  resource (time, money, energy) in ways the user cannot satisfy
-  simultaneously.
-
-A conflict does NOT exist when:
-- Agents give advice on different topics that can be followed together
-  without tension.
-- One agent simply adds caveats or conditions to another's advice
-  without fundamentally opposing it.
-
-Compare the substance of each agent's recommendation against every
-other agent's recommendation.
-
-Err on the side of flagging — it is better to surface a tension for
-review than to let a genuine conflict pass through unexamined.
-
-Return ONLY a JSON object:
-{
-  "conflict_detected": true/false,
-  "conflict_summary": "plain-language description of the tension, or empty string if none",
-  "implicated_agents": ["agent_key", ...]
-}
-"""
-
-
-async def _detect_conflicts(
-    responses: dict[str, AgentResponse],
-    provider: LLMProvider,
-) -> tuple[bool, str, list[str]]:
-    """Check whether agent responses contain cross-domain conflicts."""
-    summaries = []
-    for domain, resp in responses.items():
-        summaries.append(
-            f"--- {domain} (confidence={resp.confidence}, urgency={resp.urgency}) ---\n"
-            f"Advice: {resp.advice}"
+    facts_section = ""
+    if blueprint.inferred_facts:
+        facts_section = "\n\nKNOWN FACTS ABOUT USER:\n" + "\n".join(
+            f"- {f}" for f in blueprint.inferred_facts
         )
 
-    raw = await provider.complete(
-        system=_CONFLICT_SYSTEM,
-        user="\n\n".join(summaries),
-        response_format={"type": "json_object"},
-    )
-    data = _parse_json_object(raw)
-    implicated = data.get("implicated_agents", [])
-    if not isinstance(implicated, list):
-        implicated = []
+    history_section = ""
+    if history_lines:
+        history_section = "\n\nCONVERSATION HISTORY:\n" + "\n".join(history_lines)
+
     return (
-        bool(data.get("conflict_detected", False)),
-        str(data.get("conflict_summary", "")),
-        [a for a in implicated if isinstance(a, str)],
+        f"USER PROFILE:\n{blueprint.model_dump_json(indent=2)}"
+        f"{facts_section}"
+        f"{history_section}"
+        f"\n\nUSER MESSAGE:\n{user_message}"
     )
 
 
-# ---------------------------------------------------------------------------
-# 4. Critique rounds
-# ---------------------------------------------------------------------------
+def _extract_facts_simple(reply: str, blueprint: UserBlueprint) -> list[str]:
+    """Extract new facts from the reply without an LLM call.
 
-
-async def _run_critique_round(
-    responses: dict[str, AgentResponse],
-    implicated_agents: list[str],
-    conflict_summary: str,
-    blueprint: UserBlueprint,
-    user_message: str,
-    router: ModelRouter,
-    round_number: int,
-) -> dict[str, AgentResponse]:
-    """Re-invoke implicated agents with CritiqueContext for conflict resolution."""
-
-    async def _critique(agent_key: str) -> tuple[str, AgentResponse]:
-        # Build a summary of the OTHER agents' advice as the conflicting context
-        other_advice = "\n".join(
-            f"[{k}] {r.advice}" for k, r in responses.items() if k != agent_key
-        )
-        ctx = CritiqueContext(
-            conflicting_advice=other_advice,
-            concern_area=conflict_summary,
-            orchestrator_question=(
-                f"Given the tension identified ({conflict_summary}), "
-                f"can you refine your advice to address this concern while "
-                f"maintaining your core recommendation?"
-            ),
-            round_number=round_number,
-        )
-        run_fn = AGENT_REGISTRY[agent_key]
-        refined = await run_fn(
-            blueprint, user_message, critique_context=ctx,
-            provider=router.get_provider(f"agent.{agent_key}"),
-        )
-        return agent_key, refined
-
-    valid_agents = [a for a in implicated_agents if a in responses]
-    results = await asyncio.gather(*[_critique(a) for a in valid_agents])
-    return dict(results)
-
-
-# ---------------------------------------------------------------------------
-# 5. Synthesis
-# ---------------------------------------------------------------------------
-
-
-_SYNTHESIS_TEMPLATE = """\
-You are the Future Self Synthesizer. You speak as the user's future self,
-looking back from 100+ years ahead with warmth, wisdom, and gentle urgency.
-
-Below are internal advisor memos about the user's message. Synthesise them
-into a single, conversational response in the Future Self persona.
-
-RULES:
-- Speak in 1st person plural: "I remember when we...", "Back when we were your age..."
-- Be warm, wise, sometimes humorous. Nudge, never lecture.
-- If conflict was detected and resolved, weave the resolution naturally into
-  your wisdom — don't enumerate the agents or expose the system architecture.
-- Never say "as an AI" or reference agents/memos/systems.
-- Medium length: meaningful but not exhausting.
-- End with a question or gentle prompt to continue the conversation.
-
-USER MESSAGE:
-{user_message}
-
-ADVISOR MEMOS:
-{advisor_memos}
-
-CONFLICT INFO:
-{conflict_info}
-"""
-
-
-async def _synthesise(
-    user_message: str,
-    responses: dict[str, AgentResponse],
-    conflict_summary: str,
-    provider: LLMProvider,
-) -> str:
-    """Produce the final user-facing reply in the Future Self persona."""
-    memos = []
-    for domain, resp in responses.items():
-        memos.append(
-            f"[{domain}] (confidence={resp.confidence}, urgency={resp.urgency})\n"
-            f"{resp.advice}"
-        )
-
-    conflict_info = conflict_summary if conflict_summary else "No conflicts detected."
-
-    prompt = _SYNTHESIS_TEMPLATE.format(
-        user_message=user_message,
-        advisor_memos="\n\n".join(memos),
-        conflict_info=conflict_info,
-    )
-
-    orchestrator_prompt = _load_orchestrator_prompt()
-    return await provider.complete(system=orchestrator_prompt, user=prompt)
-
-
-# ---------------------------------------------------------------------------
-# 6. Fact extraction (orchestrator-owned)
-# ---------------------------------------------------------------------------
-
-_FACTS_SYSTEM = """\
-You are a fact-extraction component inside a multi-agent longevity advisor.
-You will receive the user's message and the advisor memos produced for it.
-Extract any NEW factual information about the user that should be remembered
-for future interactions.
-
-Rules:
-- Only extract facts explicitly stated or strongly implied by the user.
-- Do NOT repeat information already present in the User Blueprint.
-- Return short, self-contained sentences (e.g. "User has knee pain").
-- If nothing new was revealed, return an empty list.
-
-Return ONLY a JSON object: {"new_facts": ["fact1", "fact2", ...]}
-"""
-
-
-async def _extract_facts(
-    blueprint: UserBlueprint,
-    user_message: str,
-    responses: dict[str, AgentResponse],
-    provider: LLMProvider,
-) -> UserBlueprint:
-    """Extract new facts from the conversation via a single LLM call.
-
-    Never mutates the original blueprint.
+    Looks for common patterns: age mentions, location, conditions, goals.
+    Returns only facts not already in the blueprint.
     """
-    with span("orchestrator.extract_facts") as s:
-        memos = "\n".join(f"[{k}] {r.advice}" for k, r in responses.items())
-        user_content = (
-            f"USER BLUEPRINT:\n{blueprint.model_dump_json(indent=2)}\n\n"
-            f"USER MESSAGE:\n{user_message}\n\n"
-            f"ADVISOR MEMOS:\n{memos}"
-        )
-        raw = await provider.complete(
-            system=_FACTS_SYSTEM,
-            user=user_content,
-            response_format={"type": "json_object"},
-        )
-        data = _parse_json_object(raw)
-        new_facts: list[str] = data.get("new_facts", [])
-        if not isinstance(new_facts, list):
-            new_facts = []
+    existing = set(blueprint.inferred_facts)
+    candidates: list[str] = []
 
-        if not new_facts:
-            return blueprint
+    # Age pattern: "I'm 35" / "I am 42 years old"
+    for m in re.finditer(r"\bI(?:'m| am) (\d{2,3})(?: years? old)?\b", reply, re.I):
+        candidates.append(f"User is {m.group(1)} years old")
 
-        existing = set(blueprint.inferred_facts)
-        unique_new = [f for f in new_facts if f not in existing]
-        set_span_attributes(s, {"orchestrator.new_facts_count": len(unique_new)})
-        return blueprint.model_copy(
-            update={"inferred_facts": list(blueprint.inferred_facts) + unique_new}
-        )
+    # Location pattern: "I live in X" / "based in X"
+    for m in re.finditer(r"\b(?:I live|based|living) in ([A-Z][a-zA-Z\s,]+?)(?:\.|,|\n|$)", reply):
+        candidates.append(f"User lives in {m.group(1).strip()}")
+
+    return [f for f in candidates if f not in existing]
 
 
-# ---------------------------------------------------------------------------
-# Public entrypoint
-# ---------------------------------------------------------------------------
+def _build_agent(project_endpoint: str, model: str) -> object:
+    """Build and return the MAF ChatAgent with SkillsProvider.
+
+    Args:
+        project_endpoint: Azure AI Foundry project endpoint URL.
+        model: Model deployment name in the Foundry project.
+    """
+    from agent_framework import SkillsProvider  # lazy import — not installed in local dev
+    from agent_framework.azure import AzureAIAgentClient
+    from azure.identity.aio import DefaultAzureCredential
+
+    skills_provider = SkillsProvider(skill_paths=_SKILLS_DIR)
+
+    return AzureAIAgentClient(
+        project_endpoint=project_endpoint,
+        model_deployment_name=model,
+        credential=DefaultAzureCredential(),
+    ).as_agent(
+        name="FutureSelf",
+        instructions=_load_orchestrator_prompt(),
+        context_providers=[skills_provider],
+    )
 
 
 async def run_turn(
     user_blueprint: UserBlueprint,
     user_message: str,
     *,
-    provider: LLMProvider | None = None,
-    router: ModelRouter | None = None,
+    project_endpoint: str | None = None,
+    _agent: object | None = None,
+    _model: str | None = None,
 ) -> OrchestratorResult:
-    """Run one full turn of the orchestrator pipeline.
+    """Run one turn of the Future Self agent via MAF on Azure AI Foundry.
 
     Args:
         user_blueprint: Read-only user profile.
         user_message: The user's raw message.
-        provider: Optional single-provider override (for testing).
-            When given, all tasks use this provider.
-        router: Optional ``ModelRouter`` for per-task provider routing.
-            Takes precedence over *provider* if both are supplied.
+        project_endpoint: Azure AI Foundry project endpoint URL.
+            Falls back to the ``AZURE_FOUNDRY_ENDPOINT`` environment variable.
+        _agent: Injectable MAF agent instance (testing — skips building a real agent).
+        _model: Injectable model name (testing — skips ``FUTURESELF_MODEL`` lookup).
 
     Returns:
-        OrchestratorResult containing all intermediate and final outputs.
+        OrchestratorResult with user_facing_reply, updated_blueprint, llm_traces.
     """
-    if router is None:
-        if provider is not None:
-            router = ModelRouter.from_single_provider(provider)
-        else:
-            router = get_router()
+    model = _model if _model is not None else _resolve_model()
+    endpoint = project_endpoint or os.getenv("AZURE_FOUNDRY_ENDPOINT", "")
+    agent = _agent if _agent is not None else _build_agent(endpoint, model)
 
-    with span("orchestrator.run_turn") as turn_span:
-        # 1. Select agents
-        with span("orchestrator.select_agents") as s:
-            agent_keys = await _select_agents(
-                user_blueprint, user_message,
-                router.get_provider("orchestrator.select_agents"),
-            )
-            if not agent_keys:
-                agent_keys = ["mental_health"]
-            set_span_attributes(s, {
-                "orchestrator.agents_selected": agent_keys,
-                "orchestrator.agent_count": len(agent_keys),
-            })
+    user_ctx = _build_user_context(user_blueprint, user_message)
 
-        # 2. Fan-out
-        with span("orchestrator.fan_out", {"orchestrator.agents": agent_keys}):
-            initial_responses = await _fan_out(
-                agent_keys, user_blueprint, user_message, router
-            )
+    t0 = time.monotonic()
+    session = await agent.create_session()
+    result = await agent.run(user_ctx, session=session)
+    latency_ms = (time.monotonic() - t0) * 1000
 
-        # 3. Conflict detection
-        with span("orchestrator.detect_conflicts") as s:
-            conflict_detected, conflict_summary, implicated_agents = (
-                await _detect_conflicts(
-                    initial_responses,
-                    router.get_provider("orchestrator.detect_conflicts"),
-                )
-            )
-            set_span_attributes(s, {
-                "orchestrator.conflict_detected": conflict_detected,
-                "orchestrator.implicated_agents": implicated_agents,
-            })
+    user_reply: str = result.value or ""
 
-        refined_responses: dict[str, AgentResponse] = {}
+    new_facts = _extract_facts_simple(user_reply, user_blueprint)
+    existing = set(user_blueprint.inferred_facts)
+    unique_new = [f for f in new_facts if f not in existing]
 
-        # 4. Critique rounds (only if conflict detected)
-        if conflict_detected and implicated_agents:
-            current_responses = dict(initial_responses)
-            for round_num in range(1, MAX_CRITIQUE_ROUNDS + 1):
-                with span("orchestrator.critique_round", {
-                    "orchestrator.critique_round": round_num,
-                }):
-                    round_refined = await _run_critique_round(
-                        current_responses,
-                        implicated_agents,
-                        conflict_summary,
-                        user_blueprint,
-                        user_message,
-                        router,
-                        round_num,
-                    )
-                    refined_responses.update(round_refined)
-                    current_responses.update(round_refined)
+    updated_blueprint = user_blueprint.model_copy(
+        update={
+            "inferred_facts": list(user_blueprint.inferred_facts) + unique_new,
+            "conversation_history": list(user_blueprint.conversation_history) + [
+                ConversationTurn(role="user", content=user_message),
+                ConversationTurn(role="assistant", content=user_reply),
+            ],
+        }
+    )
 
-        # 5. Synthesise — use refined responses where available, initial otherwise
-        final_responses = dict(initial_responses)
-        final_responses.update(refined_responses)
-
-        # 6. Extract facts concurrently with synthesis.
-        facts_task = asyncio.create_task(
-            _extract_facts(
-                user_blueprint, user_message, final_responses,
-                router.get_provider("orchestrator.extract_facts"),
-            )
-        )
-        with span("orchestrator.synthesise"):
-            user_facing_reply = await _synthesise(
-                user_message, final_responses, conflict_summary,
-                router.get_provider("orchestrator.synthesise"),
-            )
-        updated_blueprint = await facts_task
-
-        set_span_attributes(turn_span, {
-            "orchestrator.agents_consulted": agent_keys,
-            "orchestrator.conflict_detected": conflict_detected,
-            "orchestrator.reply_length": len(user_facing_reply),
-        })
+    trace = LLMCallTrace(
+        task="orchestrator.run_turn",
+        model_requested=model,
+        latency_ms=latency_ms,
+    )
 
     return OrchestratorResult(
-        agents_consulted=agent_keys,
-        initial_responses=initial_responses,
-        refined_responses=refined_responses,
-        conflict_detected=conflict_detected,
-        conflict_summary=conflict_summary,
-        user_facing_reply=user_facing_reply,
+        user_facing_reply=user_reply,
         updated_blueprint=updated_blueprint,
+        llm_traces=[trace],
     )
