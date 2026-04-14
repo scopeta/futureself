@@ -55,17 +55,23 @@ jobs:
       - name: Deploy to Azure Container Apps
         run: |
           az extension add --name containerapp --upgrade -y
-          az containerapp registry set \
+
+          # Delete app if it exists (clean slate avoids stuck Failed state)
+          if az containerapp show --name futureself --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} &>/dev/null; then
+            az containerapp delete --name futureself --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} --yes
+          fi
+
+          az containerapp create \
             --name futureself \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
-            --server ${{ secrets.ACR_LOGIN_SERVER }} \
-            --username ${{ secrets.ACR_USERNAME }} \
-            --password ${{ secrets.ACR_PASSWORD }}
-          az containerapp update \
-            --name futureself \
-            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --environment futureself-env \
             --image ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.tag }} \
-            --set-env-vars \
+            --registry-server ${{ secrets.ACR_LOGIN_SERVER }} \
+            --registry-username ${{ secrets.ACR_USERNAME }} \
+            --registry-password ${{ secrets.ACR_PASSWORD }} \
+            --target-port 8000 \
+            --ingress external \
+            --env-vars \
               FUTURESELF_MODEL="${{ github.event.inputs.futureself_model }}" \
               ANTHROPIC_API_KEY="${{ secrets.ANTHROPIC_API_KEY }}" \
               AZURE_FOUNDRY_ENDPOINT="${{ secrets.AZURE_FOUNDRY_ENDPOINT }}"
