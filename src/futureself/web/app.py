@@ -1,6 +1,7 @@
 """FastAPI application — JSON API backend for the FutureSelf React UI."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -12,6 +13,11 @@ from fastapi.staticfiles import StaticFiles
 from futureself.web.routes.api import router as api_router
 
 load_dotenv(override=True)
+
+_appinsights_conn = os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING", "")
+if _appinsights_conn:
+    from azure.monitor.opentelemetry import configure_azure_monitor  # noqa: PLC0415
+    configure_azure_monitor(connection_string=_appinsights_conn)
 
 _FRONTEND_DIST = Path(__file__).parent.parent.parent.parent / "frontend" / "dist"
 
