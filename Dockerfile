@@ -10,7 +10,7 @@ COPY frontend/ ./
 RUN bun run build
 
 # ---- Python build stage ----
-FROM python:3.12-slim AS builder
+FROM python:3.13-slim AS builder
 
 WORKDIR /app
 
@@ -23,7 +23,7 @@ COPY src/ src/
 RUN uv sync --frozen --no-dev
 
 # ---- Runtime stage ----
-FROM python:3.12-slim
+FROM python:3.13-slim
 
 WORKDIR /app
 
