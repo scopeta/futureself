@@ -7,9 +7,6 @@ resolution-markers = [
     "python_full_version < '3.13'",
 ]
 
-[options]
-prerelease-mode = "allow"
-
 [[package]]
 name = "a2a-sdk"
 version = "0.3.23"
@@ -80,15 +77,15 @@ wheels = [
 
 [[package]]
 name = "agent-framework-anthropic"
-version = "1.0.0b260311"
+version = "1.0.0b260409"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "agent-framework-core" },
     { name = "anthropic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1f/8d/889086c911672cc2d559a0020adaecab63acf3106b82ee387e2f743043fa/agent_framework_anthropic-1.0.0b260311.tar.gz", hash = "sha256:21143b11d505d7a9a11a3b3ff273f672fa98ec33528588eba6f9130cc9a7858b", size = 14264, upload-time = "2026-03-11T23:19:44.398Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/65/8b/e9b70503084a808adc01f1939d59438439243ad3b536f09cf7fdc432532e/agent_framework_anthropic-1.0.0b260409.tar.gz", hash = "sha256:4db8ea132ee161e0c3d957d9becdf99474617ad80d82a17072b696fbc4d988a8", size = 18323, upload-time = "2026-04-10T03:30:49.944Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c0/e1/0fa1aa39b09a14fcfe748f812a9ee4347a377ccacbef2e9b2a8c6a48b7e5/agent_framework_anthropic-1.0.0b260311-py3-none-any.whl", hash = "sha256:213c8bbbb42fd1b4f414ec5e914038f17d66dabdf94c92406b28e1770463cf26", size = 14192, upload-time = "2026-03-11T23:19:40.568Z" },
+    { url = "https://files.pythonhosted.org/packages/3a/a6/a68c7a964cd8a27ef22c4984860d1c04c0ae00dd289ebcb4c57495a79101/agent_framework_anthropic-1.0.0b260409-py3-none-any.whl", hash = "sha256:99aabcf1eabd4d09a8f3a75a1b60bd1ce11e81d735ac5ad8c949dba19d738ae5", size = 21094, upload-time = "2026-04-10T03:26:19.301Z" },
 ]
 
 [[package]]
@@ -529,7 +526,7 @@ wheels = [
 
 [[package]]
 name = "anthropic"
-version = "0.84.0"
+version = "0.80.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -541,9 +538,9 @@ dependencies = [
     { name = "sniffio" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/04/ea/0869d6df9ef83dcf393aeefc12dd81677d091c6ffc86f783e51cf44062f2/anthropic-0.84.0.tar.gz", hash = "sha256:72f5f90e5aebe62dca316cb013629cfa24996b0f5a4593b8c3d712bc03c43c37", size = 539457, upload-time = "2026-02-25T05:22:38.54Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/7f/63/791e14ef5a8ecb485cef5b5d058c7ca3ad6c50a2f94cf4cea5231c6b7c16/anthropic-0.80.0.tar.gz", hash = "sha256:ef042586673fdcab2a6ffd381aa5f9a1bcce38ffe73c07fe70bd56d12b8124ba", size = 533291, upload-time = "2026-02-17T19:26:26.717Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/64/ca/218fa25002a332c0aa149ba18ffc0543175998b1f65de63f6d106689a345/anthropic-0.84.0-py3-none-any.whl", hash = "sha256:861c4c50f91ca45f942e091d83b60530ad6d4f98733bfe648065364da05d29e7", size = 455156, upload-time = "2026-02-25T05:22:40.468Z" },
+    { url = "https://files.pythonhosted.org/packages/b2/4b/665f29338f51d0c2f9e04b276ea54cc1e957ae5c521a0ad868aa80abc608/anthropic-0.80.0-py3-none-any.whl", hash = "sha256:dad0e40ec371ee686e9ffb2e0cb461a0ed51447fa100927fb5d39b174c286d6f", size = 453667, upload-time = "2026-02-17T19:26:29.96Z" },
 ]
 
 [[package]]
