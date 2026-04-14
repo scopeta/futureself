@@ -14,7 +14,7 @@ When rebuilding or refactoring, resolve conflicts in this order:
 
 ## Non-Negotiable Architecture Rules
 - The **Future Self Synthesizer** is the only user-facing agent.
-- All reasoning is performed by a single Claude Opus 4.6 call per turn — no sub-agent fan-out.
+- All reasoning is performed by a single LLM call per turn — no sub-agent fan-out.
 - Domain expertise is provided via MAF skills (`SKILL.md` files) loaded on demand via the `load_skill` tool.
 - Shared User Blueprint mutations must be controlled (orchestrator only).
 - Implement the solution minimizing architecture and codebase complexity, even if it means performing deep refactoring.
@@ -34,13 +34,43 @@ When rebuilding or refactoring, resolve conflicts in this order:
 
 The `SkillsProvider` injects skill names and descriptions into the agent's system prompt at session start. The agent calls `load_skill("<name>")` to retrieve the full SKILL.md content for any domain it determines is relevant. No LLM call is consumed by skill loading — it is a tool call response.
 
+## Cloud Deployment
+
+### Current (active)
+Single Azure Container App (Southeast Asia) runs both the React UI and the agent in-process:
+
+```
+Browser → Container App (FastAPI port 8000)
+               └── MAF Agent → AnthropicClient → Anthropic API
+```
+
+- Entrypoint: `uvicorn futureself.web.app:app`
+- LLM: Anthropic direct (`ANTHROPIC_API_KEY` + `FUTURESELF_MODEL`)
+- Foundry path also supported: set `AZURE_FOUNDRY_ENDPOINT` to switch to `FoundryChatClient` (model-agnostic)
+- Observability: Application Insights via MAF OTel (`APPLICATIONINSIGHTS_CONNECTION_STRING`)
+
+### Target (planned — blocked on `azure-ai-agentserver-agentframework` public availability)
+React UI stays on Container App as a BFF proxy. Agent moves to Foundry Agent Service (managed hosting, persistent threads, automatic traces):
+
+```
+Browser → Container App (FastAPI port 8000, thin BFF)
+               └── Foundry Agent Service (managed, port 8088)
+                       └── MAF Agent → AnthropicClient → Anthropic API
+```
+
+- Container App entrypoint unchanged (`uvicorn web/app.py`) — `chat_send` route proxies to Foundry Agent Service instead of calling local orchestrator
+- Agent entrypoint: `python main.py` → `from_agent_framework(agent).run()`
+- Frontend (`api.ts`) unchanged — still calls `/api/chat/send` with Bearer token
+- Observability: automatic in AI Foundry portal → Tracing tab
+- Blocker: `azure-ai-agentserver-agentframework` not on public PyPI
+- `main.py` needs update: replace `AzureAIAgentClient` (removed in MAF v1.0.1) with `AnthropicClient` + `Agent`
+
 ## Coding Standards
 - Public functions require type hints and docstrings.
 - Shared User Blueprint mutations must be controlled (orchestrator only).
 - Invalid or malformed model output must never crash a turn. Parsing must degrade gracefully to safe defaults.
 - Tests go in `tests/` mirroring `src/`.
-- Observability: MAF built-in OTel exports to Azure Application Insights via `azure-monitor-opentelemetry`. Configured at startup in `web/app.py` via `APPLICATIONINSIGHTS_CONNECTION_STRING`. No custom span instrumentation code.
-- Run on the Cloud. Deploy to Azure Container Apps (Southeast Asia) via `deploy.yml`. Dockerfile runs `uvicorn futureself.web.app:app` on port 8000.
+- Observability: MAF built-in OTel → Application Insights via `azure-monitor-opentelemetry`. Configured at startup in `web/app.py`. No custom span code.
 
 ## Skill File Conventions
 - Each skill file is `src/futureself/skills/<domain>/SKILL.md`.
@@ -52,7 +82,7 @@ The `SkillsProvider` injects skill names and descriptions into the agent's syste
 ## Current Phase
 Phase 6 (The Data): User persistence, supplement tracking, biomarker history, blueprint data quality, conversation history population.
 
-Architecture refactoring is complete: single Claude Opus 4.6 agent with MAF SkillsProvider replaces the 6-stage supervisor-worker pipeline. LLM calls reduced from 7–11 to 1 per turn.
+Architecture refactoring is complete: single agent with MAF SkillsProvider replaces the 6-stage supervisor-worker pipeline. LLM calls reduced from 7–11 to 1 per turn.
 
 Phase 5 (Observability) is complete: `LLMCallTrace` for every LLM call (model, tokens, latency), deterministic evaluation framework (`eval.py`), `simulate.py --eval/--traces/--eval-json` flags. Application Insights wired via `azure-monitor-opentelemetry`.
 
@@ -76,5 +106,5 @@ Phase 4 (Model router and cloud) is complete: dual LLM provider support (Anthrop
 ## CI/CD
 - **`ci.yml`** — runs on every push/PR to `main`: installs deps, runs `pytest tests/ -v`.
 - **`live.yml`** — manual dispatch only: requires Azure credentials, runs live scenario tests.
-- **`deploy.yml`** — manual dispatch: builds container, pushes to ACR, deploys to Foundry Hosted Agent Service.
+- **`deploy.yml`** — manual dispatch: builds container, pushes to ACR (`futureselfacr.azurecr.io`), deploys to Azure Container Apps (Southeast Asia).
 - `main` is the default branch. CI must pass before merging.
