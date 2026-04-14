@@ -30,7 +30,7 @@ Single-agent pipeline with MAF SkillsProvider for progressive domain disclosure.
 flowchart TD
     User([User Message + UserBlueprint]) --> Agent
 
-    subgraph Agent [ChatAgent — Claude Opus 4.6 via Azure AI Foundry]
+    subgraph Agent [ChatAgent — Claude Opus 4.6 via Anthropic direct or Azure AI Foundry]
         System[System: prompts/orchestrator.md]
         Skills[SkillsProvider injects skill names + descriptions at session start]
         Reason[Claude reasons → calls load_skill for relevant domains]
@@ -174,35 +174,46 @@ Supporting types:
 
 Claude reads the manifest and autonomously decides which skills to load based on the user message.
 
-### AzureAIAgentClient
+### Agent construction (`src/futureself/orchestrator.py`)
 
+Two client backends, selected by environment variable:
+
+**Anthropic direct** (`ANTHROPIC_API_KEY` set, no `AZURE_FOUNDRY_ENDPOINT`):
 ```python
-from agent_framework.azure import AzureAIAgentClient
-from azure.identity.aio import DefaultAzureCredential
+from agent_framework import Agent, SkillsProvider
+from agent_framework_anthropic import AnthropicClient
 
-client = AzureAIAgentClient(
-    project_endpoint=AZURE_FOUNDRY_ENDPOINT,
-    model_deployment_name="claude-opus-4-6",
-    credential=DefaultAzureCredential(),
-)
-agent = client.as_agent(
-    name="FutureSelf",
-    instructions=orchestrator_prompt,
-    context_providers=[skills_provider],
-)
+client = AnthropicClient(api_key=api_key, model=model)
+agent = Agent(client, instructions=prompt, name="FutureSelf", context_providers=[skills_provider])
 ```
 
-### AnthropicFoundry (direct client, for non-hosted use)
-
+**Azure AI Foundry** (`AZURE_FOUNDRY_ENDPOINT` set) — model-agnostic (GPT, Claude, Grok, etc.):
 ```python
-from anthropic import AnthropicFoundry
-from azure.identity import DefaultAzureCredential, get_bearer_token_provider
+from agent_framework import Agent, SkillsProvider
+from agent_framework_foundry import FoundryChatClient
+from azure.identity import DefaultAzureCredential
 
-token_provider = get_bearer_token_provider(DefaultAzureCredential(), "https://ai.azure.com/.default")
-client = AnthropicFoundry(azure_ad_token_provider=token_provider, base_url=endpoint)
+client = FoundryChatClient(project_endpoint=endpoint, model=model, credential=DefaultAzureCredential())
+agent = Agent(client, instructions=prompt, name="FutureSelf", context_providers=[skills_provider])
 ```
 
-Authentication: Azure Entra ID via `DefaultAzureCredential` (managed identity in production, developer credentials locally).
+Session and run (in `run_turn`):
+```python
+session = agent.create_session()           # sync — not async
+result = await agent.run(user_ctx, session=session)
+reply = result.text or ""                  # AgentResponse.text, not .value
+```
+
+`FUTURESELF_MODEL` env var controls the model name in both cases (required, no default).
+
+### Observability
+
+MAF's built-in OpenTelemetry instrumentation is activated at startup via:
+```python
+from azure.monitor.opentelemetry import configure_azure_monitor
+configure_azure_monitor(connection_string=os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING"))
+```
+Set `APPLICATIONINSIGHTS_CONNECTION_STRING` as a Container App env var. Traces appear in Azure Portal → Application Insights → Transaction search. No custom span code needed.
 
 ---
 
@@ -260,9 +271,9 @@ Mock pattern:
 ```python
 def _mock_agent(reply: str) -> MagicMock:
     result = MagicMock()
-    result.value = reply
+    result.text = reply                                        # AgentResponse.text
     agent = MagicMock()
-    agent.create_session = AsyncMock(return_value=MagicMock())
+    agent.create_session = MagicMock(return_value=MagicMock())  # sync, not AsyncMock
     agent.run = AsyncMock(return_value=result)
     return agent
 ```
@@ -295,8 +306,8 @@ def _mock_agent(reply: str) -> MagicMock:
 - Replaced 6-stage supervisor-worker pipeline (7–11 LLM calls/turn) with a single Claude Opus 4.6 agent.
 - MAF `SkillsProvider` delivers progressive domain disclosure via `SKILL.md` files.
 - `OrchestratorResult` simplified: removed `agents_consulted`, `initial_responses`, `refined_responses`, `conflict_detected`, `conflict_summary`, `AgentResponse`, `CritiqueContext`.
-- Custom OpenTelemetry code removed; Foundry Application Insights used for observability.
-- Deployment updated to Foundry Hosted Agent Service (`main.py` + `azure-ai-agentserver-agentframework`).
+- Observability: MAF built-in OTel → Application Insights via `azure-monitor-opentelemetry` (configured at startup, no custom span code).
+- Deployment: Azure Container Apps (Southeast Asia), FastAPI on port 8000, Docker image on `futureselfacr.azurecr.io`.
 - LLM calls: 7–11 → 1 per turn.
 
 **Phase 6: The Data** — *Active*

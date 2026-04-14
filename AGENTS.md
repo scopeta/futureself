@@ -39,8 +39,8 @@ The `SkillsProvider` injects skill names and descriptions into the agent's syste
 - Shared User Blueprint mutations must be controlled (orchestrator only).
 - Invalid or malformed model output must never crash a turn. Parsing must degrade gracefully to safe defaults.
 - Tests go in `tests/` mirroring `src/`.
-- Observability is provided by Azure AI Foundry (Application Insights) — no custom OTel code.
-- Run on the Cloud. Deploy to Azure AI Foundry Hosted Agent Service via `azure-ai-agentserver-agentframework` adapter.
+- Observability: MAF built-in OTel exports to Azure Application Insights via `azure-monitor-opentelemetry`. Configured at startup in `web/app.py` via `APPLICATIONINSIGHTS_CONNECTION_STRING`. No custom span instrumentation code.
+- Run on the Cloud. Deploy to Azure Container Apps (Southeast Asia) via `deploy.yml`. Dockerfile runs `uvicorn futureself.web.app:app` on port 8000.
 
 ## Skill File Conventions
 - Each skill file is `src/futureself/skills/<domain>/SKILL.md`.
@@ -52,11 +52,11 @@ The `SkillsProvider` injects skill names and descriptions into the agent's syste
 ## Current Phase
 Phase 6 (The Data): User persistence, supplement tracking, biomarker history, blueprint data quality, conversation history population.
 
-Architecture refactoring is complete: single Claude Opus 4.6 agent with MAF SkillsProvider replaces the 6-stage supervisor-worker pipeline. LLM calls reduced from 7–11 to 1 per turn. Custom OTel removed in favor of Foundry Application Insights.
+Architecture refactoring is complete: single Claude Opus 4.6 agent with MAF SkillsProvider replaces the 6-stage supervisor-worker pipeline. LLM calls reduced from 7–11 to 1 per turn.
 
-Phase 5 (Observability) is complete: `LLMCallTrace` for every LLM call (model, tokens, latency), deterministic evaluation framework (`eval.py`), `simulate.py --eval/--traces/--eval-json` flags.
+Phase 5 (Observability) is complete: `LLMCallTrace` for every LLM call (model, tokens, latency), deterministic evaluation framework (`eval.py`), `simulate.py --eval/--traces/--eval-json` flags. Application Insights wired via `azure-monitor-opentelemetry`.
 
-Phase 4 (Model router and cloud) is complete: Azure AI Foundry provider, containerized deployment on Azure Container Apps.
+Phase 4 (Model router and cloud) is complete: dual LLM provider support (Anthropic direct + Azure AI Foundry), containerized deployment on Azure Container Apps (Southeast Asia).
 
 ## Explicit Do-Not-Do
 - No sub-agent direct user addressing.
