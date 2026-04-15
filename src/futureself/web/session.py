@@ -19,6 +19,13 @@ from futureself.schemas import UserBlueprint
 
 
 # ---------------------------------------------------------------------------
+# In-memory fallback (used when DATABASE_URL is not configured)
+# ---------------------------------------------------------------------------
+
+_mem_sessions: dict[str, UserBlueprint] = {}
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -36,19 +43,22 @@ def _token_from_request(request: Request) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-async def create_session(db: AsyncSession, blueprint: UserBlueprint) -> str:
-    """Create a User + Blueprint + Session row; return the token.
+async def create_session(db: AsyncSession | None, blueprint: UserBlueprint) -> str:
+    """Create a session and return the token.
 
-    Falls back to in-memory (app.state) when DATABASE_URL is not configured.
+    Uses PostgreSQL when DATABASE_URL is configured, otherwise in-memory.
     """
-    from futureself.db.models import Blueprint, Session, User  # noqa: PLC0415
-
     token = str(uuid.uuid4())[:32].replace("-", "")
+
+    if db is None:
+        _mem_sessions[token] = blueprint
+        return token
+
+    from futureself.db.models import Blueprint, Session, User  # noqa: PLC0415
 
     user = User()
     db.add(user)
-    await db.flush()  # populate user.id
-
+    await db.flush()
     db.add(Blueprint(user_id=user.id, data=blueprint.model_dump()))
     db.add(Session(token=token, user_id=user.id))
     await db.commit()
@@ -56,17 +66,17 @@ async def create_session(db: AsyncSession, blueprint: UserBlueprint) -> str:
 
 
 async def get_blueprint_from_bearer(
-    request: Request, db: AsyncSession
+    request: Request, db: AsyncSession | None
 ) -> UserBlueprint | None:
-    """Load UserBlueprint for the token in the Authorization header.
-
-    Returns None if token is missing or not found.
-    """
-    from futureself.db.models import Blueprint, Session  # noqa: PLC0415
-
+    """Load UserBlueprint for the token in the Authorization header."""
     token = _token_from_request(request)
     if not token:
         return None
+
+    if db is None:
+        return _mem_sessions.get(token)
+
+    from futureself.db.models import Blueprint, Session  # noqa: PLC0415
 
     row = await db.scalar(
         select(Blueprint)
@@ -78,21 +88,32 @@ async def get_blueprint_from_bearer(
     return UserBlueprint.model_validate(row.data)
 
 
-async def get_token_from_bearer(request: Request, db: AsyncSession) -> str | None:
-    """Return the token if it exists in the sessions table, else None."""
-    from futureself.db.models import Session  # noqa: PLC0415
-
+async def get_token_from_bearer(
+    request: Request, db: AsyncSession | None
+) -> str | None:
+    """Return the token if it exists in the session store, else None."""
     token = _token_from_request(request)
     if not token:
         return None
+
+    if db is None:
+        return token if token in _mem_sessions else None
+
+    from futureself.db.models import Session  # noqa: PLC0415
+
     exists = await db.scalar(select(Session.token).where(Session.token == token))
     return exists
 
 
 async def save_blueprint(
-    token: str, blueprint: UserBlueprint, db: AsyncSession
+    token: str, blueprint: UserBlueprint, db: AsyncSession | None
 ) -> None:
     """Persist the updated blueprint after a turn."""
+    if db is None:
+        if token in _mem_sessions:
+            _mem_sessions[token] = blueprint
+        return
+
     from futureself.db.models import Blueprint, Session  # noqa: PLC0415
 
     session_row = await db.scalar(select(Session).where(Session.token == token))

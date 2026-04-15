@@ -41,9 +41,14 @@ def init_engine() -> None:
     )
 
 
-async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    """FastAPI dependency that yields a database session per request."""
+async def get_db() -> AsyncGenerator[AsyncSession | None, None]:
+    """FastAPI dependency that yields a database session per request.
+
+    Yields None when DATABASE_URL is not configured — session.py falls back
+    to in-memory storage in that case.
+    """
     if _session_factory is None:
-        raise RuntimeError("Database not initialised — call init_engine() at startup.")
+        yield None
+        return
     async with _session_factory() as session:
         yield session
