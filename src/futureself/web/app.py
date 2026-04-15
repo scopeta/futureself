@@ -33,10 +33,12 @@ def create_app() -> FastAPI:
         from futureself.db.engine import init_engine  # noqa: PLC0415
         init_engine()
 
-    # Allow the Vite dev server to call the API during local development
+    # ALLOWED_ORIGINS: comma-separated list of origins for CORS.
+    # Defaults to Vite dev server in development; empty in production (same-origin).
+    _origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",") if o.strip()]
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173"],
+        allow_origins=_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

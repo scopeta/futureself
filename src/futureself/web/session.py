@@ -8,8 +8,7 @@ Falls back to in-memory if DATABASE_URL is not set (local dev without a DB).
 """
 from __future__ import annotations
 
-import os
-import uuid
+import secrets
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -48,7 +47,7 @@ async def create_session(db: AsyncSession | None, blueprint: UserBlueprint) -> s
 
     Uses PostgreSQL when DATABASE_URL is configured, otherwise in-memory.
     """
-    token = str(uuid.uuid4())[:32].replace("-", "")
+    token = secrets.token_urlsafe(24)  # 32 URL-safe chars, cryptographically random
 
     if db is None:
         _mem_sessions[token] = blueprint
@@ -56,12 +55,13 @@ async def create_session(db: AsyncSession | None, blueprint: UserBlueprint) -> s
 
     from futureself.db.models import Blueprint, Session, User  # noqa: PLC0415
 
-    user = User()
-    db.add(user)
-    await db.flush()
-    db.add(Blueprint(user_id=user.id, data=blueprint.model_dump()))
-    db.add(Session(token=token, user_id=user.id))
-    await db.commit()
+    async with db.begin():  # atomic: all three inserts commit together or not at all
+        user = User()
+        db.add(user)
+        await db.flush()  # populate user.id within the transaction
+        db.add(Blueprint(user_id=user.id, data=blueprint.model_dump()))
+        db.add(Session(token=token, user_id=user.id))
+
     return token
 
 
