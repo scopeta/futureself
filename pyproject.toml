@@ -4,8 +4,8 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     "anthropic>=0.39",
-    "agent-framework>=1.0.0b1",
-    "agent-framework-anthropic>=1.0.0b1",
+    "agent-framework>=1.0.1",
+    "agent-framework-anthropic>=1.0.0b260304",
     "agent-framework-foundry>=1.0.1",
     "azure-identity>=1.25",
     "pydantic>=2.7",
@@ -15,6 +15,10 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "python-multipart>=0.0.12",
     "azure-monitor-opentelemetry>=1.6",
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+    "asyncpg>=0.30",
+    "psycopg2-binary>=2.9",
 ]
 
 [project.optional-dependencies]

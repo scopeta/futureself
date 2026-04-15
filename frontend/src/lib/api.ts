@@ -64,3 +64,72 @@ export async function fetchBlueprint(): Promise<Record<string, unknown>> {
   if (!res.ok) throw new Error('Failed to fetch blueprint');
   return res.json();
 }
+
+/**
+ * Add a biomarker entry to the history.
+ */
+export async function addBiomarker(entry: {
+  marker: string;
+  value: number;
+  unit: string;
+  date: string;
+  source?: string | null;
+}): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/blueprint/biomarkers`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeader() },
+    body: JSON.stringify(entry),
+  });
+  if (!res.ok) throw new Error('Failed to add biomarker');
+}
+
+/**
+ * Patch the psych section of the blueprint (goals, fears, etc.).
+ */
+export async function patchPsych(psych: {
+  goals: string[];
+  fears?: string[];
+  stress_level?: string | null;
+  mental_health_flags?: string[];
+}): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/blueprint/psych`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...authHeader() },
+    body: JSON.stringify(psych),
+  });
+  if (!res.ok) throw new Error('Failed to update goals');
+}
+
+/**
+ * Patch the context section of the blueprint (lifestyle_notes, location, etc.).
+ */
+export async function patchContext(ctx: {
+  lifestyle_notes: string[];
+  location_city?: string | null;
+  location_country?: string | null;
+  occupation?: string | null;
+  income_usd_annual?: number | null;
+  family_situation?: string | null;
+}): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/blueprint/context`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...authHeader() },
+    body: JSON.stringify(ctx),
+  });
+  if (!res.ok) throw new Error('Failed to update lifestyle');
+}
+
+/**
+ * Fetch the data quality report for the current blueprint.
+ */
+export async function fetchQuality(): Promise<{
+  score: number;
+  flags: Array<{ field: string; severity: string; message: string }>;
+  recommendations: string[];
+}> {
+  const res = await fetch(`${API_BASE}/api/blueprint/quality`, {
+    headers: authHeader(),
+  });
+  if (!res.ok) throw new Error('Failed to fetch quality report');
+  return res.json();
+}

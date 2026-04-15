@@ -17,7 +17,9 @@ load_dotenv(override=True)
 _appinsights_conn = os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING", "")
 if _appinsights_conn:
     from azure.monitor.opentelemetry import configure_azure_monitor  # noqa: PLC0415
+    from agent_framework.observability import enable_instrumentation  # noqa: PLC0415
     configure_azure_monitor(connection_string=_appinsights_conn)
+    enable_instrumentation(enable_sensitive_data=False)
 
 _FRONTEND_DIST = Path(__file__).parent.parent.parent.parent / "frontend" / "dist"
 
@@ -26,8 +28,10 @@ def create_app() -> FastAPI:
     """Build and configure the FastAPI application."""
     application = FastAPI(title="FutureSelf")
 
-    application.state.sessions = {}
-    application.state.conversations = {}
+    # Initialise database engine if DATABASE_URL is configured
+    if os.getenv("DATABASE_URL"):
+        from futureself.db.engine import init_engine  # noqa: PLC0415
+        init_engine()
 
     # Allow the Vite dev server to call the API during local development
     application.add_middleware(

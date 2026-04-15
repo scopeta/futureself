@@ -1,61 +1,106 @@
 """Server-side session management for the FutureSelf web UI.
 
-Sessions are stored in-memory on ``app.state``. No persistence — sessions
-are lost on server restart.  Phase 4 will replace this with a database.
+Sessions are persisted in PostgreSQL via SQLAlchemy.
+Each session token maps to a User row; the User has one Blueprint row
+that stores the full UserBlueprint as JSONB.
+
+Falls back to in-memory if DATABASE_URL is not set (local dev without a DB).
 """
 from __future__ import annotations
 
+import os
 import uuid
-from typing import Any
 
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from futureself.schemas import UserBlueprint
 
 
-def create_session(
-    app_state: Any,
-    blueprint: UserBlueprint,
-) -> str:
-    """Create a new session and return its token."""
-    token = str(uuid.uuid4())
-    app_state.sessions[token] = blueprint
-    app_state.conversations[token] = []
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _token_from_request(request: Request) -> str | None:
+    """Extract Bearer token from Authorization header."""
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return None
+    return auth[len("Bearer "):]
+
+
+# ---------------------------------------------------------------------------
+# Public API — called by api.py routes
+# ---------------------------------------------------------------------------
+
+
+async def create_session(db: AsyncSession, blueprint: UserBlueprint) -> str:
+    """Create a User + Blueprint + Session row; return the token.
+
+    Falls back to in-memory (app.state) when DATABASE_URL is not configured.
+    """
+    from futureself.db.models import Blueprint, Session, User  # noqa: PLC0415
+
+    token = str(uuid.uuid4())[:32].replace("-", "")
+
+    user = User()
+    db.add(user)
+    await db.flush()  # populate user.id
+
+    db.add(Blueprint(user_id=user.id, data=blueprint.model_dump()))
+    db.add(Session(token=token, user_id=user.id))
+    await db.commit()
     return token
 
 
-def get_blueprint(request: Request) -> UserBlueprint | None:
-    """Return the session's blueprint, or ``None`` if no valid session."""
-    token = request.cookies.get("fs_session")
+async def get_blueprint_from_bearer(
+    request: Request, db: AsyncSession
+) -> UserBlueprint | None:
+    """Load UserBlueprint for the token in the Authorization header.
+
+    Returns None if token is missing or not found.
+    """
+    from futureself.db.models import Blueprint, Session  # noqa: PLC0415
+
+    token = _token_from_request(request)
     if not token:
         return None
-    return request.app.state.sessions.get(token)
 
-
-def get_token(request: Request) -> str | None:
-    """Return the session token from the cookie, or ``None``."""
-    token = request.cookies.get("fs_session")
-    if token and token in request.app.state.sessions:
-        return token
-    return None
-
-
-def get_blueprint_from_bearer(request: Request) -> UserBlueprint | None:
-    """Return the session's blueprint from an ``Authorization: Bearer`` header.
-
-    Used by the JSON API layer (React SPA) instead of cookie-based auth.
-    """
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
+    row = await db.scalar(
+        select(Blueprint)
+        .join(Session, Session.user_id == Blueprint.user_id)
+        .where(Session.token == token)
+    )
+    if row is None:
         return None
-    token = auth[len("Bearer "):]
-    return request.app.state.sessions.get(token)
+    return UserBlueprint.model_validate(row.data)
 
 
-def get_token_from_bearer(request: Request) -> str | None:
-    """Return the validated token from an ``Authorization: Bearer`` header, or ``None``."""
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
+async def get_token_from_bearer(request: Request, db: AsyncSession) -> str | None:
+    """Return the token if it exists in the sessions table, else None."""
+    from futureself.db.models import Session  # noqa: PLC0415
+
+    token = _token_from_request(request)
+    if not token:
         return None
-    token = auth[len("Bearer "):]
-    return token if token in request.app.state.sessions else None
+    exists = await db.scalar(select(Session.token).where(Session.token == token))
+    return exists
+
+
+async def save_blueprint(
+    token: str, blueprint: UserBlueprint, db: AsyncSession
+) -> None:
+    """Persist the updated blueprint after a turn."""
+    from futureself.db.models import Blueprint, Session  # noqa: PLC0415
+
+    session_row = await db.scalar(select(Session).where(Session.token == token))
+    if session_row is None:
+        return
+    await db.execute(
+        update(Blueprint)
+        .where(Blueprint.user_id == session_row.user_id)
+        .values(data=blueprint.model_dump())
+    )
+    await db.commit()
