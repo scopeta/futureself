@@ -28,14 +28,13 @@ def create_app() -> FastAPI:
     """Build and configure the FastAPI application."""
     application = FastAPI(title="FutureSelf")
 
-    # Initialise database engine if DATABASE_URL is configured
-    if os.getenv("DATABASE_URL"):
-        from futureself.db.engine import init_engine  # noqa: PLC0415
-        init_engine()
+    # Initialise database engine — DATABASE_URL is required in production.
+    from futureself.db.engine import init_engine  # noqa: PLC0415
+    init_engine()
 
     # ALLOWED_ORIGINS: comma-separated list of origins for CORS.
-    # Defaults to Vite dev server in development; empty in production (same-origin).
-    _origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",") if o.strip()]
+    # Defaults to empty (same-origin); set explicitly if frontend is on a separate origin.
+    _origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()]
     application.add_middleware(
         CORSMiddleware,
         allow_origins=_origins,

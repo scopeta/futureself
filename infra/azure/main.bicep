@@ -11,7 +11,8 @@
 //     --parameters containerImage=<acr>.azurecr.io/futureself:latest \
 //                  acrName=<acr> \
 //                  azureFoundryEndpoint=https://<account>.services.ai.azure.com \
-//                  foundryAccountName=<account>
+//                  foundryAccountName=<account> \
+//                  pgAdminPassword=<strong-password>
 
 @description('Name of the Container Apps Environment')
 param environmentName string = 'futureself-env'
@@ -38,6 +39,22 @@ param foundryAccountName string
 @secure()
 param appInsightsConnectionString string = ''
 
+@description('PostgreSQL administrator username')
+param pgAdminUser string = 'fsadmin'
+
+@description('PostgreSQL administrator password')
+@secure()
+param pgAdminPassword string
+
+@description('PostgreSQL SKU name (Burstable tier for dev/small prod)')
+param pgSkuName string = 'Standard_B1ms'
+
+@description('PostgreSQL storage size in GB')
+param pgStorageGb int = 32
+
+@description('PostgreSQL major version')
+param pgVersion string = '16'
+
 // ---- Existing resources (looked up, not created) ----
 resource acr 'Microsoft.ContainerRegistry/registries@2023-11-01-preview' existing = {
   name: acrName
@@ -59,6 +76,53 @@ resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
   }
 }
 
+// ---- PostgreSQL Flexible Server ----
+resource pgServer 'Microsoft.DBforPostgreSQL/flexibleServers@2023-12-01-preview' = {
+  name: '${appName}-pg'
+  location: location
+  sku: {
+    name: pgSkuName
+    tier: 'Burstable'
+  }
+  properties: {
+    version: pgVersion
+    administratorLogin: pgAdminUser
+    administratorLoginPassword: pgAdminPassword
+    storage: {
+      storageSizeGB: pgStorageGb
+    }
+    backup: {
+      backupRetentionDays: 7
+      geoRedundantBackup: 'Disabled'
+    }
+    highAvailability: {
+      mode: 'Disabled'
+    }
+  }
+}
+
+// Allow Azure services (Container Apps) to connect
+resource pgFirewallAllowAzure 'Microsoft.DBforPostgreSQL/flexibleServers/firewallRules@2023-12-01-preview' = {
+  parent: pgServer
+  name: 'AllowAzureServices'
+  properties: {
+    startIpAddress: '0.0.0.0'
+    endIpAddress: '0.0.0.0'
+  }
+}
+
+// Application database
+resource pgDatabase 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2023-12-01-preview' = {
+  parent: pgServer
+  name: 'futureself'
+  properties: {
+    charset: 'UTF8'
+    collation: 'en_US.utf8'
+  }
+}
+
+var databaseUrl = 'postgresql+asyncpg://${pgAdminUser}:${pgAdminPassword}@${pgServer.properties.fullyQualifiedDomainName}:5432/futureself'
+
 // ---- Container Apps Environment ----
 resource environment 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: environmentName
@@ -78,6 +142,10 @@ resource environment 'Microsoft.App/managedEnvironments@2024-03-01' = {
 resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
   name: appName
   location: location
+  dependsOn: [
+    pgDatabase
+    pgFirewallAllowAzure
+  ]
   identity: {
     type: 'SystemAssigned'
   }
@@ -98,6 +166,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
       ]
       secrets: concat([
         { name: 'acr-password', value: acr.listCredentials().passwords[0].value }
+        { name: 'database-url', value: databaseUrl }
       ], appInsightsConnectionString != '' ? [
         { name: 'appinsights-conn', value: appInsightsConnectionString }
       ] : [])
@@ -114,6 +183,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
           env: concat([
             { name: 'FUTURESELF_LLM_PROVIDER', value: 'azure_foundry' }
             { name: 'AZURE_FOUNDRY_ENDPOINT', value: azureFoundryEndpoint }
+            { name: 'DATABASE_URL', secretRef: 'database-url' }
           ], appInsightsConnectionString != '' ? [
             { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', secretRef: 'appinsights-conn' }
           ] : [])
@@ -169,3 +239,4 @@ resource foundryRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 
 output fqdn string = containerApp.properties.configuration.ingress.fqdn
 output principalId string = containerApp.identity.principalId
+output pgHost string = pgServer.properties.fullyQualifiedDomainName

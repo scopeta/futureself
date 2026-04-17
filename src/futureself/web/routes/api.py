@@ -26,7 +26,7 @@ from futureself.web.session import (
 
 router = APIRouter()
 
-DB = Annotated[AsyncSession | None, Depends(get_db)]
+DB = Annotated[AsyncSession, Depends(get_db)]
 
 
 # ---------------------------------------------------------------------------

@@ -22,33 +22,24 @@ _engine = None
 _session_factory = None
 
 
-def _get_url() -> str:
+def init_engine() -> None:
+    """Initialise the async engine. Call once at application startup."""
+    global _engine, _session_factory
     url = os.getenv("DATABASE_URL", "")
     if not url:
         raise RuntimeError(
             "DATABASE_URL is not set. "
             "Example: postgresql+asyncpg://user:pass@host:5432/futureself"
         )
-    return url
-
-
-def init_engine() -> None:
-    """Initialise the async engine. Call once at application startup."""
-    global _engine, _session_factory
-    _engine = create_async_engine(_get_url(), echo=False, pool_pre_ping=True)
+    _engine = create_async_engine(url, echo=False, pool_pre_ping=True)
     _session_factory = async_sessionmaker(
         _engine, expire_on_commit=False, class_=AsyncSession
     )
 
 
-async def get_db() -> AsyncGenerator[AsyncSession | None, None]:
-    """FastAPI dependency that yields a database session per request.
-
-    Yields None when DATABASE_URL is not configured — session.py falls back
-    to in-memory storage in that case.
-    """
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    """FastAPI dependency that yields a database session per request."""
     if _session_factory is None:
-        yield None
-        return
+        raise RuntimeError("Database not initialised — call init_engine() at startup")
     async with _session_factory() as session:
         yield session
