@@ -22,6 +22,11 @@ COPY src/ src/
 # Install production dependencies only (no dev extras).
 RUN uv sync --frozen --no-dev
 
+# Work around namespace collision: agent-framework-foundry (and friends) ship an
+# empty agent_framework/__init__.py that can clobber the core package's __init__.py
+# depending on install order. Force-reinstall the core so its __init__.py wins.
+RUN uv pip install --force-reinstall --no-deps agent-framework==1.0.1
+
 # ---- Runtime stage ----
 FROM python:3.13-slim
 
