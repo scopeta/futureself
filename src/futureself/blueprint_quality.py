@@ -68,7 +68,7 @@ def check_quality(blueprint: UserBlueprint) -> QualityReport:
     for entry in bio.biomarker_history:
         try:
             entry_date = datetime.fromisoformat(entry.date).date()
-        except (ValueError, AttributeError):
+        except ValueError:
             continue
         age_days = (today - entry_date).days
         if age_days > _STALE_BIOMARKER_DAYS:
