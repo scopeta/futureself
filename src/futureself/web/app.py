@@ -17,9 +17,16 @@ load_dotenv(override=True)
 _appinsights_conn = os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING", "")
 if _appinsights_conn:
     from azure.monitor.opentelemetry import configure_azure_monitor  # noqa: PLC0415
-    from agent_framework.observability import enable_instrumentation  # noqa: PLC0415
     configure_azure_monitor(connection_string=_appinsights_conn)
-    enable_instrumentation(enable_sensitive_data=False)
+    # MAF OTel instrumentation is best-effort — some agent-framework releases
+    # have a broken observability module that fails at import time. Without it
+    # we still get HTTP/DB spans from azure-monitor-opentelemetry, just not
+    # MAF-specific agent/skill spans.
+    try:
+        from agent_framework.observability import enable_instrumentation  # noqa: PLC0415
+        enable_instrumentation(enable_sensitive_data=False)
+    except (ImportError, AttributeError):
+        pass
 
 _FRONTEND_DIST = Path(__file__).parent.parent.parent.parent / "frontend" / "dist"
 
