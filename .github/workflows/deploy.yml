@@ -81,6 +81,5 @@ jobs:
             --env-vars \
               FUTURESELF_MODEL="${{ github.event.inputs.futureself_model }}" \
               ANTHROPIC_API_KEY="${{ secrets.ANTHROPIC_API_KEY }}" \
-              AZURE_FOUNDRY_ENDPOINT="${{ secrets.AZURE_FOUNDRY_ENDPOINT }}" \
               APPLICATIONINSIGHTS_CONNECTION_STRING="${{ secrets.APPLICATIONINSIGHTS_CONNECTION_STRING }}" \
               DATABASE_URL="${{ secrets.DATABASE_URL }}"
