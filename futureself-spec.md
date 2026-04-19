@@ -18,7 +18,7 @@ Domain expertise is delivered via six skills loaded on demand — not via parall
 - **Long-term:** The interaction model is designed for a lifelong relationship, not transactional queries.
 - **Persona-consistent synthesis** as the user's future self.
 - **Controlled blueprint updates** owned by orchestrator only.
-- **Minimal LLM calls:** 1 Claude Opus 4.6 call per turn plus tool calls for skill loading (no extra completions).
+- **Minimal LLM calls:** 1 reasoning LLM call per turn plus tool calls for skill loading (no extra completions).
 
 ---
 
@@ -30,10 +30,10 @@ Single-agent pipeline with MAF SkillsProvider for progressive domain disclosure.
 flowchart TD
     User([User Message + UserBlueprint]) --> Agent
 
-    subgraph Agent [ChatAgent — Claude Opus 4.6 via Anthropic direct or Azure AI Foundry]
+    subgraph Agent [ChatAgent — via Anthropic direct or Azure AI Foundry]
         System[System: prompts/orchestrator.md]
         Skills[SkillsProvider injects skill names + descriptions at session start]
-        Reason[Claude reasons → calls load_skill for relevant domains]
+        Reason[LLM reasons → calls load_skill for relevant domains]
         Skill1[load_skill physical_health → returns SKILL.md body]
         Skill2[load_skill mental_health → returns SKILL.md body]
         Synthesize[Synthesizes Future Self reply in character]
@@ -75,11 +75,11 @@ flowchart TD
 Single-turn flow (`run_turn`):
 
 1. **Build** user context from `UserBlueprint` + `user_message` (conversation history, inferred facts, profile).
-2. **Run** the MAF ChatAgent with `SkillsProvider` (Claude Opus 4.6 via Azure AI Foundry).
+2. **Run** the MAF ChatAgent with `SkillsProvider` .
    - SkillsProvider injects skill names + descriptions at session start.
-   - Claude reads the turn context, decides which skills are relevant, calls `load_skill` for each.
+   - LLM reads the turn context, decides which skills are relevant, calls `load_skill` for each.
    - SkillsProvider returns the full SKILL.md body — no LLM call consumed.
-   - Claude synthesizes the Future Self reply in character.
+   - LLM synthesizes the Future Self reply in character.
 3. **Extract** new facts from the reply via `_extract_facts_simple` (regex, no LLM call).
 4. **Append** turn to conversation history and merge new facts into blueprint (immutable copy).
 5. **Return** `OrchestratorResult`.
@@ -172,7 +172,7 @@ Supporting types:
 2. At session start, appends a short skills manifest to the system prompt (~100 tokens/skill): name + description only.
 3. Handles `load_skill("<name>")` tool calls by returning the full SKILL.md body.
 
-Claude reads the manifest and autonomously decides which skills to load based on the user message.
+LLM reads the manifest and autonomously decides which skills to load based on the user message.
 
 ### Agent construction (`src/futureself/orchestrator.py`)
 
@@ -303,7 +303,7 @@ def _mock_agent(reply: str) -> MagicMock:
 **Phase 5: Observability** — *Complete*
 
 **Architecture Refactoring** — *Complete*
-- Replaced 6-stage supervisor-worker pipeline (7–11 LLM calls/turn) with a single Claude Opus 4.6 agent.
+- Replaced 6-stage supervisor-worker pipeline (7–11 LLM calls/turn) with a single reasoning LLM model.
 - MAF `SkillsProvider` delivers progressive domain disclosure via `SKILL.md` files.
 - `OrchestratorResult` simplified: removed `agents_consulted`, `initial_responses`, `refined_responses`, `conflict_detected`, `conflict_summary`, `AgentResponse`, `CritiqueContext`.
 - Observability: MAF built-in OTel → Application Insights via `azure-monitor-opentelemetry` (configured at startup, no custom span code).
