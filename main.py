@@ -49,7 +49,7 @@ def build_agent() -> object:
         )
     else:
         api_key = os.environ["ANTHROPIC_API_KEY"]
-        client = AnthropicClient(api_key=api_key, model=model)
+        client = AnthropicClient(api_key=api_key, model_id=model)
 
     return Agent(
         client,
