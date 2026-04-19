@@ -77,15 +77,15 @@ wheels = [
 
 [[package]]
 name = "agent-framework-anthropic"
-version = "1.0.0b260304"
+version = "1.0.0b260409"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "agent-framework-core" },
     { name = "anthropic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/85/fa/6de2f13341a6d513ea8b5dcffd35a88de887c2c046e83e05b5b7568bb132/agent_framework_anthropic-1.0.0b260304.tar.gz", hash = "sha256:e6504bdfdf612aa9c27c03ed7eeeb4f27a8889d60023089447769ba6430d9176", size = 14148, upload-time = "2026-03-04T22:05:45.689Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/65/8b/e9b70503084a808adc01f1939d59438439243ad3b536f09cf7fdc432532e/agent_framework_anthropic-1.0.0b260409.tar.gz", hash = "sha256:4db8ea132ee161e0c3d957d9becdf99474617ad80d82a17072b696fbc4d988a8", size = 18323, upload-time = "2026-04-10T03:30:49.944Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/60/0c/4b03b540c3e2fa7c242a1ae69933246c36d8cf48c05282120fcee39e0a7c/agent_framework_anthropic-1.0.0b260304-py3-none-any.whl", hash = "sha256:22d9877e96d57462cd09c003c14f003f07de511e16c76b08c2acbe9bffbbbf8b", size = 14088, upload-time = "2026-03-04T22:05:18.692Z" },
+    { url = "https://files.pythonhosted.org/packages/3a/a6/a68c7a964cd8a27ef22c4984860d1c04c0ae00dd289ebcb4c57495a79101/agent_framework_anthropic-1.0.0b260409-py3-none-any.whl", hash = "sha256:99aabcf1eabd4d09a8f3a75a1b60bd1ce11e81d735ac5ad8c949dba19d738ae5", size = 21094, upload-time = "2026-04-10T03:26:19.301Z" },
 ]
 
 [[package]]
@@ -503,6 +503,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/61/62/06741b579156360248d1ec624842ad0edf697050bbaf7c3e46394e106ad1/aiosignal-1.4.0.tar.gz", hash = "sha256:f47eecd9468083c2029cc99945502cb7708b082c232f9aca65da147157b251c7", size = 25007, upload-time = "2025-07-03T22:54:43.528Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/fb/76/641ae371508676492379f16e2fa48f4e2c11741bd63c48be4b12a6b09cba/aiosignal-1.4.0-py3-none-any.whl", hash = "sha256:053243f8b92b990551949e63930a839ff0cf0b0ebbe0597b0f3fb19e1a0fe82e", size = 7490, upload-time = "2025-07-03T22:54:42.156Z" },
+]
+
+[[package]]
+name = "aiosqlite"
+version = "0.22.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/4e/8a/64761f4005f17809769d23e518d915db74e6310474e733e3593cfc854ef1/aiosqlite-0.22.1.tar.gz", hash = "sha256:043e0bd78d32888c0a9ca90fc788b38796843360c855a7262a532813133a0650", size = 14821, upload-time = "2025-12-23T19:25:43.997Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/00/b7/e3bf5133d697a08128598c8d0abc5e16377b51465a33756de24fa7dee953/aiosqlite-0.22.1-py3-none-any.whl", hash = "sha256:21c002eb13823fad740196c5a2e9d8e62f6243bd9e7e4a1f87fb5e44ecb4fceb", size = 17405, upload-time = "2025-12-23T19:25:42.139Z" },
 ]
 
 [[package]]
@@ -1271,6 +1280,7 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
+    { name = "aiosqlite" },
     { name = "httpx" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -1280,8 +1290,9 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "agent-framework", specifier = ">=1.0.1" },
-    { name = "agent-framework-anthropic", specifier = ">=1.0.0b260304" },
+    { name = "agent-framework-anthropic", specifier = ">=1.0.0b260409" },
     { name = "agent-framework-foundry", specifier = ">=1.0.1" },
+    { name = "aiosqlite", marker = "extra == 'dev'", specifier = ">=0.20" },
     { name = "alembic", specifier = ">=1.13" },
     { name = "anthropic", specifier = ">=0.39" },
     { name = "asyncpg", specifier = ">=0.30" },

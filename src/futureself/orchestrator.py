@@ -92,7 +92,7 @@ def _build_agent(model: str) -> object:
             )
         from agent_framework_anthropic import AnthropicClient  # noqa: PLC0415
 
-        client = AnthropicClient(api_key=api_key, model_id=model)
+        client = AnthropicClient(api_key=api_key, model=model)
 
     return Agent(
         client,

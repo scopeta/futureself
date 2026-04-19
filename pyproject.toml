@@ -5,7 +5,7 @@ requires-python = ">=3.12"
 dependencies = [
     "anthropic>=0.39",
     "agent-framework>=1.0.1",
-    "agent-framework-anthropic>=1.0.0b260304",
+    "agent-framework-anthropic>=1.0.0b260409",
     "agent-framework-foundry>=1.0.1",
     "azure-identity>=1.25",
     "pydantic>=2.7",
