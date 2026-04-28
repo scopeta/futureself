@@ -10,8 +10,9 @@ Usage (local testing):
 Usage (Foundry hosted deployment):
     Configured via Dockerfile CMD / azd agent manifest startupCommand.
 
-NOTE: Requires azure-ai-agentserver-agentframework (not yet on public PyPI).
-      See AGENTS.md "Cloud Deployment / Target" for current status.
+NOTE: Requires azure-ai-agentserver-agentframework. Package is on public
+      PyPI (1.0.0b17) but blocked on an agent-framework-core version
+      conflict — see AGENTS.md "Cloud Deployment / Target" for status.
 """
 from __future__ import annotations
 
