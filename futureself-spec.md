@@ -322,6 +322,27 @@ def _mock_agent(reply: str) -> MagicMock:
 - Blueprint data quality verification and context drift flagging.
 - Conversation history population.
 
+**Phase 6.5: Identity & Onboarding (Entra ID)** — *Planned*
+
+Prerequisite slice for productionizing Phase 6: every Blueprint row must be owned by an authenticated user, and no user may read or mutate another user's data.
+
+- **Identity provider:** Microsoft Entra ID (workforce tenant initially; multi-tenant External ID configuration deferred to Phase 7 if WhatsApp B2C onboarding requires it).
+- **Auth flow:** OIDC Authorization Code + PKCE from the React UI via MSAL.js. Backend validates Entra-issued JWTs (`iss`, `aud`, signature against tenant JWKS) on every protected request.
+- **User identifier:** the Entra `oid` claim (immutable, tenant-scoped) is the canonical user key. A `users` table in Postgres maps `oid → internal user_id (UUID)`; everything else (Blueprint, threads, supplement history) FKs to `user_id`.
+- **Onboarding:** first-login flow detects no Blueprint exists for the `oid`, walks the user through a minimum viable Blueprint capture (age, sex, location, top goals, top fears), persists, and routes to the chat surface.
+- **Authorization invariant (non-negotiable):** every database query that touches user data is filtered by the `user_id` derived from the validated token — never from a request body, query parameter, or client-supplied header. The orchestrator receives the resolved `user_id` from the auth middleware; it cannot be overridden by the caller.
+- **Foundry thread binding:** when Phase 11 (Hosted Agents) lands, the per-user Foundry thread ID stored on the `users` row inherits the same authorization rule.
+- **Tests:** add a cross-tenant access denial test (User A's token must not return User B's Blueprint) to the unit tier.
+
+UI deliverables (React frontend):
+- **Login screen** — unauthenticated landing surface with a single "Sign in with Microsoft" CTA wired to MSAL.js. No anonymous chat access.
+- **Auth-guarded routes** — chat and blueprint pages redirect to the login screen when no valid session/token is present. `api.ts` attaches the MSAL access token as `Authorization: Bearer <jwt>` on every request; 401 responses trigger a silent token refresh, then a forced re-login if refresh fails.
+- **Onboarding wizard** — first-login flow when the backend reports no Blueprint exists for the user's `oid`. Multi-step form capturing the minimum viable Blueprint (age, sex, location, top goals, top fears), persisted via the same `/api/blueprint` contract used by the existing settings UI. Wizard cannot be skipped; on completion the user is routed to chat.
+- **Session affordance** — header shows the signed-in user (display name from the Entra `name` claim) and a sign-out action that clears the MSAL cache and returns to the login screen.
+- **Multi-channel hint** — when the WhatsApp channel exists (Phase 7), the settings page shows the user's bound channel(s); identity remains anchored to the Entra `oid`.
+
+Schema impact (Section 5.1): `UserBlueprint` is conceptually per-user; the persisted row carries `user_id` as an opaque key. The Pydantic model itself does not need to expose `user_id` — it remains an envelope concern owned by the persistence layer and the auth middleware.
+
 **Phase 7: The Advanced Interface**
 - WhatsApp integration as primary conversational interface.
 - Web UI includes blueprint management, data quality flags, and lab test/exam uploads.
@@ -372,3 +393,4 @@ A rebuild from scratch is valid only if all are true:
 6. **Empty model replies do not crash a turn.**
 7. **Tests from Section 9 are present and passing.**
 8. **Persistence boundaries follow Section 11.1: Blueprint domain fields in Postgres, `conversation_history` deferred to Foundry-managed thread memory once Hosted Agents migration is active.**
+9. **Per-user authorization invariant (Phase 6.5): every user-data query is filtered by a `user_id` resolved from a validated Entra ID token, never from client-supplied input. Cross-tenant access denial test is present and passing.**
