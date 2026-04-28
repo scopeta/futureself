@@ -28,20 +28,26 @@ Single-agent pipeline with MAF SkillsProvider for progressive domain disclosure.
 
 ```mermaid
 flowchart TD
-    User([User Message + UserBlueprint]) --> Agent
+    User(["User Message + UserBlueprint"]) --> AgentNode
 
-    subgraph Agent [ChatAgent — via Anthropic direct or Azure AI Foundry]
-        System[System: prompts/orchestrator.md]
-        Skills[SkillsProvider injects skill names + descriptions at session start]
-        Reason[LLM reasons → calls load_skill for relevant domains]
-        Skill1[load_skill physical_health → returns SKILL.md body]
-        Skill2[load_skill mental_health → returns SKILL.md body]
-        Synthesize[Synthesizes Future Self reply in character]
+    subgraph AgentBox["ChatAgent (Anthropic direct or Azure AI Foundry)"]
+        AgentNode["Agent"]
+        System["System: prompts/orchestrator.md"]
+        Skills["SkillsProvider injects skill names and descriptions at session start"]
+        Reason["LLM reasons and calls load_skill for relevant domains"]
+        Skill1["load_skill physical_health returns SKILL.md body"]
+        Skill2["load_skill mental_health returns SKILL.md body"]
+        Synthesize["Synthesizes Future Self reply in character"]
+        AgentNode --> System --> Skills --> Reason
+        Reason --> Skill1
+        Reason --> Skill2
+        Skill1 --> Synthesize
+        Skill2 --> Synthesize
     end
 
-    Agent --> Reply([User-Facing Reply])
-    Reply -.-> Facts[extract_facts_simple — regex, no LLM call]
-    Facts -.-> Blueprint[(Updated Blueprint)]
+    Synthesize --> Reply(["User-Facing Reply"])
+    Reply -.-> Facts["extract_facts_simple (regex, no LLM call)"]
+    Facts -.-> Blueprint[("Updated Blueprint")]
 ```
 
 **LLM calls per turn:** 1 completion + N `load_skill` tool calls (N = 0–3 relevant domains). Skill loading consumes no additional completions.
@@ -102,7 +108,7 @@ Top-level fields:
 - `bio: BioData`
 - `psych: PsychData`
 - `context: ContextData`
-- `conversation_history: list[ConversationTurn]`
+- `conversation_history: list[ConversationTurn]` — *current persistence: Postgres, owned by FutureSelf. **On Foundry Hosted Agents migration this field becomes a transient view of Foundry-managed thread memory** (see Section 11); the Blueprint domain object stays in Postgres.*
 - `inferred_facts: list[str]`
 
 Class method:
@@ -327,10 +333,34 @@ def _mock_agent(reply: str) -> MagicMock:
 **Phase 9: Proactive Advice** *(Optional)*
 - Proactive analysis and recommendations.
 - Daily check-in capture.
+- **Agent Harness** (Foundry preview): autonomous execution loop for off-turn work — daily check-in synthesis, biomarker drift detection, scheduled nudges. Pairs with Hosted Agents (Section 11); the harness invokes the same Future Self agent without a user-initiated turn. Blueprint mutations from harness runs follow the same orchestrator-only rule as user-initiated turns.
 
 ---
 
-## 11. Rebuild Checklist
+## 11. Foundry Hosted Agents Migration (planned)
+
+When `azure-ai-agentserver-agentframework` is compatible with `agent-framework-core>=1.0.1`, the agent moves from in-process Container App execution to managed Foundry Hosted Agents. Two persistence boundaries shift:
+
+### 11.1 Conversation history → Foundry-managed thread memory
+- **Today (in-process):** `conversation_history` is a first-class field on `UserBlueprint`, persisted in Postgres alongside `bio`/`psych`/`context`/`inferred_facts`.
+- **After migration:** Foundry Agent Service maintains thread memory automatically per session. `conversation_history` on the Blueprint becomes a **read-through projection** of the active Foundry thread (or empty if no thread is bound) — not the system of record. The orchestrator no longer appends turns to it manually; Foundry does.
+- **What stays in Postgres:** `bio`, `psych`, `context`, `inferred_facts`. These are domain state, not transcript memory, and remain sovereign to FutureSelf so they survive Foundry session boundaries and channel switches (web ↔ WhatsApp).
+- **`inferred_facts` extraction unchanged:** still runs synchronously per turn via `_extract_facts_simple`, still merged into the Postgres-backed Blueprint via `model_copy`.
+- **Channel binding:** each user gets one Foundry thread per active channel; thread IDs are stored on the user record in Postgres. Switching channels (web → WhatsApp) starts a fresh thread but keeps the same Blueprint.
+
+### 11.2 Test impact
+- Mock pattern in Section 9.1 unchanged for unit tests (Foundry thread is opaque behind `agent.run`).
+- Multi-turn scenario tests need to either bind a real Foundry thread (live tier) or stub the thread interface (unit tier).
+
+### 11.3 What does *not* change
+- Single-agent rule (Section 2).
+- One LLM call per turn (Section 4).
+- SkillsProvider and `load_skill` flow (Section 6).
+- Blueprint immutability rule (Section 5.1).
+
+---
+
+## 12. Rebuild Checklist
 
 A rebuild from scratch is valid only if all are true:
 
@@ -341,3 +371,4 @@ A rebuild from scratch is valid only if all are true:
 5. **LLM call trace is recorded for every `run_turn` call.**
 6. **Empty model replies do not crash a turn.**
 7. **Tests from Section 9 are present and passing.**
+8. **Persistence boundaries follow Section 11.1: Blueprint domain fields in Postgres, `conversation_history` deferred to Foundry-managed thread memory once Hosted Agents migration is active.**
