@@ -7,6 +7,7 @@ dependencies = [
     "agent-framework>=1.0.1",
     "agent-framework-anthropic>=1.0.0b260409",
     "agent-framework-foundry>=1.0.1",
+    "azure-ai-agentserver-responses>=1.0.0b5",
     "azure-identity>=1.25",
     "pydantic>=2.7",
     "pyyaml>=6.0",
