@@ -1,0 +1,17 @@
+kind: hosted
+name: futureself
+protocols:
+  - kind: responses
+    version: 1.0.0
+resources:
+  cpu: "0.5"
+  memory: 1Gi
+environmentVariables:
+  - name: FUTURESELF_MODEL
+    value: claude-opus-4-7
+  - name: AZURE_FOUNDRY_ENDPOINT
+    value: ""
+  - name: APPLICATIONINSIGHTS_CONNECTION_STRING
+    value: ""
+  - name: DEFAULT_FETCH_HISTORY_ITEM_COUNT
+    value: "20"

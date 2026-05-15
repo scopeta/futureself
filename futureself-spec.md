@@ -358,9 +358,29 @@ Schema impact (Section 5.1): `UserBlueprint` is conceptually per-user; the persi
 
 ---
 
-## 11. Foundry Hosted Agents Migration (planned)
+## 11. Foundry Hosted Agents Migration (on-ramp complete; BFF proxy and infra pending)
 
-When `azure-ai-agentserver-agentframework` is compatible with `agent-framework-core>=1.0.1`, the agent moves from in-process Container App execution to managed Foundry Hosted Agents. Two persistence boundaries shift:
+The Hosted Agents on-ramp uses the Azure AI Responses protocol via
+`azure-ai-agentserver-responses` (protocol host) + `azure-ai-agentserver-core`
+(Starlette/Hypercorn ASGI base). The original per-framework adapter
+(`azure-ai-agentserver-agentframework`) was abandoned upstream in March 2026
+and replaced by this protocol-first model — handlers we own, no framework
+version pinning at the hosting layer.
+
+**Entrypoint:** `main.py` constructs a `ResponsesAgentServerHost`, builds the
+same MAF Agent as `orchestrator._build_agent`, and exposes a
+`@app.response_handler` that pulls platform-managed history via
+`context.get_history()`, formats it alongside the current message, and runs
+the agent. `FoundryStorageProvider` is wired conditionally on
+`FOUNDRY_PROJECT_ENDPOINT` so deployed history persists across scale-to-zero;
+locally the host falls back to `InMemoryResponseProvider`. Hypercorn listens
+on `0.0.0.0:8088`. Deployment shape is declared in `agent.yaml`
+(`azd ai agent` manifest); replacing the current Container Apps deploy
+template is tracked separately.
+
+When the BFF (`web/routes/api.py::chat_send`) cuts over to proxying the
+Hosted Agent instead of calling `run_turn` in-process, two persistence
+boundaries shift:
 
 ### 11.1 Conversation history → Foundry-managed thread memory
 - **Today (in-process):** `conversation_history` is a first-class field on `UserBlueprint`, persisted in Postgres alongside `bio`/`psych`/`context`/`inferred_facts`.

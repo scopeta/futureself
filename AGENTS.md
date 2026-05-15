@@ -45,10 +45,18 @@ When rebuilding or refactoring, resolve conflicts in this order:
 - `futureself-spec.md` — runtime architecture, contracts, deployment, rebuild checklist.
 - `prompts/orchestrator.md` — agent system prompt.
 - `src/futureself/skills/<domain>/SKILL.md` — domain skill files.
-- `src/futureself/orchestrator.py` — `run_turn` implementation.
+- `src/futureself/orchestrator.py` — `run_turn` implementation (used by FastAPI BFF).
+- `main.py` — Foundry Hosted Agent entrypoint (`ResponsesAgentServerHost` on :8088).
+- `agent.yaml` — `azd ai agent` deployment manifest (Responses protocol, 0.5 vCPU / 1 GiB).
 - `tests/` — unit and integration tests (live tests gated by the `live` marker).
 - `scenarios/` — live scenario YAML files.
 - `infra/azure/main.bicep` — Azure deployment template.
+
+## Hosting SDK
+- `azure-ai-agentserver-responses>=1.0.0b5` — Responses protocol host (replaces the abandoned
+  `azure-ai-agentserver-agentframework` v1 adapter, frozen upstream March 2026).
+- `uv lock --prerelease=allow` / `uv sync --prerelease=allow` required because the hosting SDK
+  is still in beta.
 
 ## CI/CD
 - **`ci.yml`** — runs on every push/PR to `main`: installs deps, runs `pytest tests/ -v`.

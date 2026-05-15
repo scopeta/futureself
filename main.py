@@ -1,26 +1,31 @@
-"""Foundry Hosted Agent Service entrypoint.
+"""Foundry Hosted Agent container entrypoint.
 
-Wraps the FutureSelf ChatAgent with the Azure AI Agent Server hosting
-adapter, which starts an HTTP server on :8088 compatible with the
-Foundry Agent Service Responses API.
+Exposes the FutureSelf agent via the Azure AI Responses protocol
+(POST /responses) on Hypercorn. The Foundry Hosted Agents platform calls
+this endpoint per user turn; this container is not browser-facing — the
+React BFF still talks to FastAPI (see web/app.py), and will be cut over
+to proxy this endpoint as part of futureself-spec.md §11 completion.
 
-Usage (local testing):
-    python main.py
-
-Usage (Foundry hosted deployment):
-    Configured via Dockerfile CMD / azd agent manifest startupCommand.
-
-NOTE: Requires azure-ai-agentserver-agentframework. Package is on public
-      PyPI (1.0.0b17) but blocked on an agent-framework-core version
-      conflict — see AGENTS.md "Cloud Deployment / Target" for status.
+Local testing:
+    python main.py        # 0.0.0.0:8088
 """
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 
 from agent_framework import Agent, SkillsProvider
 from agent_framework_anthropic import AnthropicClient
+from azure.ai.agentserver.responses import (
+    CreateResponse,
+    FoundryStorageProvider,
+    ResponseContext,
+    ResponseProviderProtocol,
+    ResponsesAgentServerHost,
+    ResponsesServerOptions,
+    TextResponse,
+)
 
 _SKILLS_DIR = Path(__file__).parent / "src" / "futureself" / "skills"
 _ORCHESTRATOR_PROMPT = (
@@ -28,12 +33,12 @@ _ORCHESTRATOR_PROMPT = (
 ).read_text(encoding="utf-8")
 
 
-def build_agent() -> object:
-    """Build the FutureSelf ChatAgent using current MAF API.
+def build_agent() -> Agent:
+    """Build the FutureSelf MAF Agent.
 
-    Uses AnthropicClient (Anthropic direct) when ANTHROPIC_API_KEY is set,
-    or FoundryChatClient when AZURE_FOUNDRY_ENDPOINT is set — same selection
-    logic as orchestrator.py._build_agent().
+    Mirrors ``orchestrator._build_agent``: ``AZURE_FOUNDRY_ENDPOINT`` selects
+    the Foundry chat client (model-agnostic, Entra auth); otherwise falls
+    back to Anthropic direct via ``ANTHROPIC_API_KEY``.
     """
     model = os.environ["FUTURESELF_MODEL"]
     skills_provider = SkillsProvider(skill_paths=_SKILLS_DIR)
@@ -49,8 +54,9 @@ def build_agent() -> object:
             credential=DefaultAzureCredential(),
         )
     else:
-        api_key = os.environ["ANTHROPIC_API_KEY"]
-        client = AnthropicClient(api_key=api_key, model=model)
+        client = AnthropicClient(
+            api_key=os.environ["ANTHROPIC_API_KEY"], model=model
+        )
 
     return Agent(
         client,
@@ -60,7 +66,70 @@ def build_agent() -> object:
     )
 
 
-if __name__ == "__main__":
-    from azure.ai.agentserver.agentframework import from_agent_framework  # noqa: PLC0415
+def _build_storage() -> ResponseProviderProtocol | None:
+    """Return the response store, or ``None`` for in-memory fallback.
 
-    from_agent_framework(build_agent()).run()
+    Foundry sets ``FOUNDRY_PROJECT_ENDPOINT`` on deployed containers; when
+    present, persist conversation history through Foundry storage so it
+    survives compute scale-to-zero. Locally, returning ``None`` lets the
+    host use ``InMemoryResponseProvider`` — sufficient for development.
+    """
+    if not os.getenv("FOUNDRY_PROJECT_ENDPOINT"):
+        return None
+    from azure.identity.aio import DefaultAzureCredential  # noqa: PLC0415
+
+    return FoundryStorageProvider(credential=DefaultAzureCredential())
+
+
+def _format_history_item(item: object) -> str | None:
+    """Best-effort ``ROLE: text`` extraction from a history item.
+
+    Duck-typed so the formatter survives schema evolution in the beta SDK.
+    """
+    role = (getattr(item, "role", None) or "assistant").lower()
+    content = getattr(item, "content", None) or []
+    if not isinstance(content, list):
+        return None
+    texts = [t for t in (getattr(p, "text", None) for p in content) if isinstance(t, str) and t]
+    if not texts:
+        return None
+    return f"{role.upper()}: {' '.join(texts)}"
+
+
+_options = ResponsesServerOptions(default_fetch_history_count=20)
+app = ResponsesAgentServerHost(options=_options, store=_build_storage())
+_agent = build_agent()
+
+
+@app.response_handler
+async def handle_response(
+    request: CreateResponse,
+    context: ResponseContext,
+    cancellation_signal: asyncio.Event,
+) -> TextResponse:
+    """Per-turn handler: assemble platform history + current message, run the agent.
+
+    Blueprint loading and fact extraction (``orchestrator.run_turn``) stay in
+    the BFF until the Foundry isolation-key ↔ Postgres user_id binding lands
+    (futureself-spec.md §11 + Phase 6.5). For now this handler runs the
+    agent stateless against Foundry-managed conversation history.
+    """
+    user_message = await context.get_input_text()
+    history_lines = [
+        line for item in await context.get_history() if (line := _format_history_item(item))
+    ]
+    user_ctx = (
+        "CONVERSATION HISTORY:\n"
+        + "\n".join(history_lines)
+        + f"\n\nUSER MESSAGE:\n{user_message}"
+        if history_lines
+        else user_message
+    )
+
+    session = _agent.create_session()
+    result = await _agent.run(user_ctx, session=session)
+    return TextResponse(context, request, text=result.text or "")
+
+
+if __name__ == "__main__":
+    app.run()
