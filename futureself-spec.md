@@ -358,7 +358,7 @@ Schema impact (Section 5.1): `UserBlueprint` is conceptually per-user; the persi
 
 ---
 
-## 11. Foundry Hosted Agents Migration (planned)
+## 11. Foundry Hosted Agents Migration (on-ramp complete; BFF proxy and infra pending)
 
 The Hosted Agents on-ramp uses the Azure AI Responses protocol via
 `azure-ai-agentserver-responses` (protocol host) + `azure-ai-agentserver-core`
