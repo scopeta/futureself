@@ -71,7 +71,7 @@ def _build_agent(model: str) -> object:
     # Lazy imports — SDK packages may not be installed in all environments
     from agent_framework import Agent, SkillsProvider  # noqa: PLC0415
 
-    skills_provider = SkillsProvider(skill_paths=_SKILLS_DIR)
+    skills_provider = SkillsProvider.from_paths(_SKILLS_DIR)
 
     endpoint = os.getenv("AZURE_FOUNDRY_ENDPOINT", "")
     if endpoint:
