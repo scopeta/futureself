@@ -26,6 +26,9 @@ from azure.ai.agentserver.responses import (
     ResponsesServerOptions,
     TextResponse,
 )
+from dotenv import load_dotenv
+
+load_dotenv()
 
 _SKILLS_DIR = Path(__file__).parent / "src" / "futureself" / "skills"
 _ORCHESTRATOR_PROMPT = (
@@ -41,7 +44,7 @@ def build_agent() -> Agent:
     back to Anthropic direct via ``ANTHROPIC_API_KEY``.
     """
     model = os.environ["FUTURESELF_MODEL"]
-    skills_provider = SkillsProvider(skill_paths=_SKILLS_DIR)
+    skills_provider = SkillsProvider.from_paths(_SKILLS_DIR)
 
     endpoint = os.getenv("AZURE_FOUNDRY_ENDPOINT", "")
     if endpoint:
