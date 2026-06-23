@@ -42,6 +42,7 @@ When rebuilding or refactoring, resolve conflicts in this order:
 - No duplicating spec content (architecture, deployment, phases) into this file.
 
 ## Key Files
+- `ARCHITECTURE.md` — diagram-first architecture & functionality overview (onboarding/explanatory).
 - `futureself-spec.md` — runtime architecture, contracts, deployment, rebuild checklist.
 - `prompts/orchestrator.md` — agent system prompt.
 - `src/futureself/skills/<domain>/SKILL.md` — domain skill files.
