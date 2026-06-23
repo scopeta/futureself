@@ -16,7 +16,7 @@ jobs:
         uses: astral-sh/setup-uv@v3
 
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: uv sync --extra dev --prerelease=allow
 
       - name: Azure login
         uses: azure/login@v2
@@ -28,4 +28,4 @@ jobs:
       - name: Run live scenarios
         env:
           AZURE_FOUNDRY_ENDPOINT: ${{ secrets.AZURE_FOUNDRY_ENDPOINT }}
-        run: uv run pytest tests/scenarios/ -m live -v
+        run: uv run --prerelease=allow pytest tests/scenarios/ -m live -v
