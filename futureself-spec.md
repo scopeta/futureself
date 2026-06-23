@@ -35,8 +35,8 @@ flowchart TD
         System["System: prompts/orchestrator.md"]
         Skills["SkillsProvider injects skill names and descriptions at session start"]
         Reason["LLM reasons and calls load_skill for relevant domains"]
-        Skill1["load_skill physical_health returns SKILL.md body"]
-        Skill2["load_skill mental_health returns SKILL.md body"]
+        Skill1["load_skill physical-health returns SKILL.md body"]
+        Skill2["load_skill mental-health returns SKILL.md body"]
         Synthesize["Synthesizes Future Self reply in character"]
         AgentNode --> System --> Skills --> Reason
         Reason --> Skill1
@@ -58,12 +58,17 @@ flowchart TD
 
 | # | Skill | Key | File |
 |---|-------|-----|------|
-| 1 | Physical Health | `physical_health` | `src/futureself/skills/physical_health/SKILL.md` |
-| 2 | Mental Health | `mental_health` | `src/futureself/skills/mental_health/SKILL.md` |
+| 1 | Physical Health | `physical-health` | `src/futureself/skills/physical-health/SKILL.md` |
+| 2 | Mental Health | `mental-health` | `src/futureself/skills/mental-health/SKILL.md` |
 | 3 | Financial | `financial` | `src/futureself/skills/financial/SKILL.md` |
-| 4 | Social Relations | `social_relations` | `src/futureself/skills/social_relations/SKILL.md` |
+| 4 | Social Relations | `social-relations` | `src/futureself/skills/social-relations/SKILL.md` |
 | 5 | Geopolitics | `geopolitics` | `src/futureself/skills/geopolitics/SKILL.md` |
-| 6 | Time Management | `time_management` | `src/futureself/skills/time_management/SKILL.md` |
+| 6 | Time Management | `time-management` | `src/futureself/skills/time-management/SKILL.md` |
+
+> **Skill naming (MAF constraint):** each skill's frontmatter `name` must match its
+> directory name and use only lowercase letters, numbers, and hyphens (no underscores;
+> ≤64 chars). MAF's `SkillsProvider` silently skips any `SKILL.md` whose `name` is
+> invalid or mismatched, which disables that domain. Keep directory name == frontmatter `name`.
 
 ### Domain Intent Snapshot
 
@@ -173,7 +178,7 @@ Supporting types:
 
 ### SkillsProvider (Microsoft Agent Framework)
 
-`SkillsProvider(skill_paths=Path("src/futureself/skills"))` discovers all `SKILL.md` files and:
+`SkillsProvider.from_paths(Path("src/futureself/skills"))` discovers all `SKILL.md` files and:
 1. Injects a `load_skill` tool definition into the agent's tool list.
 2. At session start, appends a short skills manifest to the system prompt (~100 tokens/skill): name + description only.
 3. Handles `load_skill("<name>")` tool calls by returning the full SKILL.md body.
@@ -225,11 +230,13 @@ Set `APPLICATIONINSIGHTS_CONNECTION_STRING` as a Container App env var. Traces a
 
 ## 7. Skill File Conventions
 
-Each skill lives at `src/futureself/skills/<domain>/SKILL.md`:
+Each skill lives at `src/futureself/skills/<domain>/SKILL.md`. The frontmatter `name`
+must equal `<domain>` (the directory name) and contain only lowercase letters, numbers,
+and hyphens:
 
 ```markdown
 ---
-name: physical_health
+name: physical-health
 description: >
   Analyze physical health, fitness, biomarkers, medications, and longevity protocols.
   Use when the user asks about exercise, sleep, nutrition, supplements, lab results,
@@ -358,7 +365,24 @@ Schema impact (Section 5.1): `UserBlueprint` is conceptually per-user; the persi
 
 ---
 
-## 11. Foundry Hosted Agents Migration (on-ramp complete; BFF proxy and infra pending)
+## 11. Foundry Hosted Agents Migration (on-ramp complete; BFF cutover gated on Foundry)
+
+### 11.0 Active topology (Anthropic direct)
+
+The active deployment runs **Anthropic direct**, where the React BFF
+(`web/app.py` → `web/routes/api.py::chat_send`) is the canonical orchestration
+path: it calls `orchestrator.run_turn` in-process and owns the Postgres-backed
+Blueprint, conversation history, and per-turn fact extraction. The BFF does
+**not** proxy the Responses host in this topology — doing so would lose the
+Blueprint/profile context (the host runs stateless against thread memory only)
+and, without Foundry, would fall back to non-durable in-memory thread storage.
+
+The Responses host (`main.py`) is the **optional Foundry on-ramp**. Both entry
+points construct the identical agent through the single shared builder
+`orchestrator.build_agent(model)` — there is no second builder to drift. The
+BFF cutover described in §11.1 below is therefore **gated on Foundry Agent
+Service** managing thread memory (`FOUNDRY_PROJECT_ENDPOINT` set); until then,
+the in-process BFF path stands.
 
 The Hosted Agents on-ramp uses the Azure AI Responses protocol via
 `azure-ai-agentserver-responses` (protocol host) + `azure-ai-agentserver-core`
@@ -368,7 +392,7 @@ and replaced by this protocol-first model — handlers we own, no framework
 version pinning at the hosting layer.
 
 **Entrypoint:** `main.py` constructs a `ResponsesAgentServerHost`, builds the
-same MAF Agent as `orchestrator._build_agent`, and exposes a
+agent via the shared `orchestrator.build_agent`, and exposes a
 `@app.response_handler` that pulls platform-managed history via
 `context.get_history()`, formats it alongside the current message, and runs
 the agent. `FoundryStorageProvider` is wired conditionally on

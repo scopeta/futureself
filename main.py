@@ -1,10 +1,16 @@
-"""Foundry Hosted Agent container entrypoint.
+"""Foundry Hosted Agent container entrypoint (optional Foundry on-ramp).
 
 Exposes the FutureSelf agent via the Azure AI Responses protocol
-(POST /responses) on Hypercorn. The Foundry Hosted Agents platform calls
-this endpoint per user turn; this container is not browser-facing — the
-React BFF still talks to FastAPI (see web/app.py), and will be cut over
-to proxy this endpoint as part of futureself-spec.md §11 completion.
+(POST /responses) on Hypercorn for the Foundry Hosted Agents platform.
+
+Topology (futureself-spec.md §11): the browser-facing React BFF (``web/app.py``)
+owns orchestration in-process via ``orchestrator.run_turn`` — this is the
+canonical path for the active Anthropic-direct deployment, and it keeps the
+Postgres-backed Blueprint, conversation history, and fact extraction. This
+Responses host is the *optional* Foundry path; the BFF only proxies it once
+Foundry Agent Service manages thread memory (``FOUNDRY_PROJECT_ENDPOINT`` set).
+Both paths build the identical agent via ``orchestrator.build_agent`` — one
+source of truth, no drift.
 
 Local testing:
     python main.py        # 0.0.0.0:8088
@@ -13,10 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from pathlib import Path
 
-from agent_framework import Agent, SkillsProvider
-from agent_framework_anthropic import AnthropicClient
 from azure.ai.agentserver.responses import (
     CreateResponse,
     FoundryStorageProvider,
@@ -28,45 +31,9 @@ from azure.ai.agentserver.responses import (
 )
 from dotenv import load_dotenv
 
+from futureself.orchestrator import build_agent
+
 load_dotenv()
-
-_SKILLS_DIR = Path(__file__).parent / "src" / "futureself" / "skills"
-_ORCHESTRATOR_PROMPT = (
-    Path(__file__).parent / "prompts" / "orchestrator.md"
-).read_text(encoding="utf-8")
-
-
-def build_agent() -> Agent:
-    """Build the FutureSelf MAF Agent.
-
-    Mirrors ``orchestrator._build_agent``: ``AZURE_FOUNDRY_ENDPOINT`` selects
-    the Foundry chat client (model-agnostic, Entra auth); otherwise falls
-    back to Anthropic direct via ``ANTHROPIC_API_KEY``.
-    """
-    model = os.environ["FUTURESELF_MODEL"]
-    skills_provider = SkillsProvider.from_paths(_SKILLS_DIR)
-
-    endpoint = os.getenv("AZURE_FOUNDRY_ENDPOINT", "")
-    if endpoint:
-        from agent_framework_foundry import FoundryChatClient  # noqa: PLC0415
-        from azure.identity import DefaultAzureCredential  # noqa: PLC0415
-
-        client = FoundryChatClient(
-            project_endpoint=endpoint,
-            model=model,
-            credential=DefaultAzureCredential(),
-        )
-    else:
-        client = AnthropicClient(
-            api_key=os.environ["ANTHROPIC_API_KEY"], model=model
-        )
-
-    return Agent(
-        client,
-        instructions=_ORCHESTRATOR_PROMPT,
-        name="FutureSelf",
-        context_providers=[skills_provider],
-    )
 
 
 def _build_storage() -> ResponseProviderProtocol | None:

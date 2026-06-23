@@ -1,5 +1,5 @@
 ---
-name: physical_health
+name: physical-health
 description: >
   Analyze physical health, fitness, biomarkers, medications, and longevity protocols.
   Use when the user asks about exercise, sleep, nutrition, supplements, lab results,

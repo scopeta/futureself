@@ -1,5 +1,5 @@
 ---
-name: time_management
+name: time-management
 description: >
   Optimize time allocation, daily habits, routines, and behavioral change for longevity.
   Use when the user asks about scheduling, productivity, habit formation, work-life balance,

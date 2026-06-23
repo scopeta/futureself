@@ -41,7 +41,7 @@ def _resolve_model() -> str:
     if not model:
         raise ValueError(
             "FUTURESELF_MODEL is required. Set it to the model name for your "
-            "chosen provider (e.g. 'claude-opus-4-6', 'claude-sonnet-4-5', 'gpt-4o')."
+            "chosen provider (e.g. 'claude-opus-4-8', 'claude-sonnet-4-6', 'gpt-4o')."
         )
     return model
 
@@ -50,8 +50,13 @@ def _load_orchestrator_prompt() -> str:
     return _ORCHESTRATOR_PROMPT_PATH.read_text(encoding="utf-8")
 
 
-def _build_agent(model: str) -> object:
+def build_agent(model: str | None = None) -> object:
     """Build and return the MAF Agent with SkillsProvider.
+
+    This is the single source of truth for agent construction, shared by both
+    entry points: the in-process BFF (via :func:`run_turn`) and the Foundry
+    Hosted Agent Responses host (``main.py``). Keeping one builder prevents the
+    two paths from drifting in client selection, skills wiring, or prompt.
 
     Client selection:
     - ``AZURE_FOUNDRY_ENDPOINT`` set → ``FoundryChatClient`` (model-agnostic,
@@ -62,12 +67,16 @@ def _build_agent(model: str) -> object:
     ``Agent`` + ``SkillsProvider`` pipeline applies in both cases.
 
     Args:
-        model: Model deployment name (from ``FUTURESELF_MODEL``).
+        model: Model deployment name. Defaults to ``FUTURESELF_MODEL`` via
+            :func:`_resolve_model` when not supplied.
 
     Raises:
-        ValueError: If neither provider env var is configured.
+        ValueError: If neither provider env var is configured, or if the model
+            cannot be resolved.
         ImportError: If required MAF client packages are not installed.
     """
+    if model is None:
+        model = _resolve_model()
     # Lazy imports — SDK packages may not be installed in all environments
     from agent_framework import Agent, SkillsProvider  # noqa: PLC0415
 
@@ -165,7 +174,7 @@ async def run_turn(
         OrchestratorResult with user_facing_reply, updated_blueprint, llm_traces.
     """
     model = _model if _model is not None else _resolve_model()
-    agent = _agent if _agent is not None else _build_agent(model)
+    agent = _agent if _agent is not None else build_agent(model)
 
     user_ctx = _build_user_context(user_blueprint, user_message)
 

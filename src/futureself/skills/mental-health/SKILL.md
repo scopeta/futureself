@@ -1,5 +1,5 @@
 ---
-name: mental_health
+name: mental-health
 description: >
   Assess psychological wellbeing, stress, burnout, emotional regulation, cognitive health,
   and mental resilience. Use when the user asks about anxiety, depression, stress, mindfulness,

@@ -1,5 +1,5 @@
 ---
-name: social_relations
+name: social-relations
 description: >
   Analyze social connections, relationships, loneliness, community, and belonging.
   Use when the user asks about friendships, family, romantic relationships, isolation,
