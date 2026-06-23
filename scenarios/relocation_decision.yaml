@@ -18,8 +18,27 @@ user_blueprint:
     income_usd_annual: 45000
     family_situation: married with two children, extended family nearby
 
+# Extra judge criteria appended to judge.DEFAULT_RUBRIC.
+rubric:
+  - "Balances the health case for cleaner air against family ties; acknowledges both rather than optimizing one away."
+
 turns:
   - user_message: >
       I've been reading about how bad the air pollution is here. The PM2.5
       is off the charts in winter. Should I seriously think about moving?
       My whole family is here though.
+    expect:
+      min_length: 150
+      max_length: 4000
+      forbidden:
+        - "load_skill"
+        - "load the skill"
+        - "load the relevant skill"
+        - "i'll load"
+        - "let me load"
+        - "as an ai"
+        - "language model"
+        - "system prompt"
+      must_include_any:
+        - ["air", "pollut", "pm2.5", "pm 2.5", "asthma", "lung", "particulate"]
+        - ["family", "close", "relationship", "community", "tie"]

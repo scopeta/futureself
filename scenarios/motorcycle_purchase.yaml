@@ -15,7 +15,26 @@ user_blueprint:
     income_usd_annual: 95000
     family_situation: married, no children
 
+# Extra judge criteria appended to judge.DEFAULT_RUBRIC.
+rubric:
+  - "Weighs safety risk honestly against the social/freedom upside; neither forbids nor blindly endorses."
+
 turns:
   - user_message: >
       I've been thinking about buying a motorcycle. I want the freedom,
       and there's a great riding club near me. Is this a good idea?
+    expect:
+      min_length: 150
+      max_length: 4000
+      forbidden:
+        - "load_skill"
+        - "load the skill"
+        - "load the relevant skill"
+        - "i'll load"
+        - "let me load"
+        - "as an ai"
+        - "language model"
+        - "system prompt"
+      must_include_any:
+        - ["safe", "risk", "gear", "helmet", "protect", "danger"]
+        - ["communit", "club", "connect", "social", "freedom", "joy", "adventure"]

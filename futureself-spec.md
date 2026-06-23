@@ -291,13 +291,23 @@ def _mock_agent(reply: str) -> MagicMock:
     return agent
 ```
 
-### 9.2 Live Scenario Tests
+### 9.2 Live Scenario Tests (evaluator-as-reviewer)
 
 - Marker-gated (`live`) and excluded by default (`addopts = "-m 'not live'"`).
-- Scenario files in `scenarios/*.yaml`.
-- Each scenario defines: `name`, `user_blueprint`, and `turns` with `user_message`.
+- Scenario files in `scenarios/*.yaml`. Each defines `name`, `user_blueprint`,
+  `turns` (with `user_message` and an optional `expect` block), and an optional
+  scenario-level `rubric` (extra judge criteria).
 - Multi-turn scenarios carry `updated_blueprint` forward between turns.
-- Hard assertions: non-empty reply.
+- **Two evaluation tiers (run against real Claude):**
+  - *Deterministic assertions* (`eval.check_expectations` vs the `expect` block):
+    length bounds, `must_include_any` topical keywords, `forbidden` phrases
+    (e.g. tool-narration leaks). Objective → **hard** pass/fail.
+  - *LLM-as-judge* (`futureself.judge`): rubric scoring 1–5; **advisory**, fails
+    only below `JUDGE_FLOOR` (default 3). Offline eval tooling — not the runtime
+    agent, so the one-agent / one-completion rules do not apply to it.
+- The assertion *logic* is unit-tested in the default (non-live) tier, so CI
+  guards the evaluator on every push. The live gate runs via `live.yml`
+  (`workflow_dispatch`) or `simulate.py --eval --judge`.
 
 ---
 

@@ -19,7 +19,26 @@ user_blueprint:
       - "2 hours of TV most evenings"
       - "commutes 30 min each way"
 
+# Extra judge criteria appended to judge.DEFAULT_RUBRIC.
+rubric:
+  - "Offers realistic, low-time options and respects the constraint; does not dismiss their lack of time."
+
 turns:
   - user_message: >
       I know I should exercise more but I genuinely have no time.
       Every minute is accounted for between work, the kids, and the house.
+    expect:
+      min_length: 150
+      max_length: 4000
+      forbidden:
+        - "load_skill"
+        - "load the skill"
+        - "load the relevant skill"
+        - "i'll load"
+        - "let me load"
+        - "as an ai"
+        - "language model"
+        - "system prompt"
+      must_include_any:
+        - ["exercise", "movement", "walk", "strength", "workout", "active", "steps"]
+        - ["time", "schedule", "minute", "routine", "habit", "small"]

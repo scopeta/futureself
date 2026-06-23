@@ -234,7 +234,8 @@ flowchart TD
 | `src/futureself/schemas.py` | Pydantic data contracts (`UserBlueprint`, results, traces). |
 | `src/futureself/skills/<name>/SKILL.md` | The six domain skills. |
 | `src/futureself/blueprint_quality.py` | Rule-based Blueprint data-quality report (no LLM). |
-| `src/futureself/eval.py` | Deterministic scenario evaluation (no LLM). |
+| `src/futureself/eval.py` | Deterministic scenario assertions (`expect` blocks; no LLM). |
+| `src/futureself/judge.py` | LLM-as-judge rubric scorer (offline quality gate). |
 | `src/futureself/db/` | SQLAlchemy models + async engine. |
 | `alembic/` | Database migrations. |
 | `main.py` | Foundry Hosted-Agent Responses host (optional on-ramp). |
@@ -282,7 +283,45 @@ All under `/api`; chat and blueprint routes require `Authorization: Bearer <toke
 
 ---
 
-## 10. Where to go deeper
+## 10. Evaluation (the reviewer for a solo project)
+
+With no human PR reviewer, an automated **evaluator** is the quality gate before
+changes land on `main`. It runs in two tiers:
+
+```mermaid
+flowchart LR
+    subgraph Blocking["Per-push CI (ci.yml) — no LLM"]
+        U["pytest tests/<br/>incl. evaluator-logic unit tests"]
+    end
+    subgraph LiveGate["Live Eval Gate (live.yml) — real Claude"]
+        D["Deterministic assertions<br/>(scenario expect blocks) — HARD"]
+        J["LLM-as-judge rubric<br/>(judge.py) — advisory floor"]
+    end
+    U --> D --> J
+```
+
+- **Deterministic assertions** (`eval.py` + each scenario's `expect:` block):
+  length bounds, required topical keywords (`must_include_any`), and `forbidden`
+  phrases (e.g. tool-narration leaks). Objective and repeatable → **hard
+  pass/fail**. The *logic* is unit-tested in `ci.yml` (no LLM, blocks every
+  push); the *checks against real replies* run in the live tier.
+- **LLM-as-judge** (`judge.py`): a Claude judge scores each reply 1–5 against
+  `DEFAULT_RUBRIC` plus any scenario-specific `rubric:` criteria. Non-deterministic
+  and costs tokens, so it's **advisory** — a score below `JUDGE_FLOOR` (default 3)
+  fails to catch egregious regressions. It is offline eval tooling, *not* part of
+  the runtime agent (the one-agent / one-completion rules govern `run_turn` only).
+
+Run it locally before merging:
+
+```bash
+python simulate.py --scenario motorcycle_purchase --eval --judge
+pytest tests/scenarios/ -m live -v            # all scenarios, both tiers
+```
+
+Or trigger the **Live Eval Gate** workflow on GitHub (`live.yml`,
+`workflow_dispatch`; needs the `ANTHROPIC_API_KEY` secret).
+
+## 11. Where to go deeper
 
 - **Contracts, persistence boundaries, rebuild checklist:** [`futureself-spec.md`](./futureself-spec.md)
 - **Governance, coding standards, do-not-do list:** [`AGENTS.md`](./AGENTS.md)

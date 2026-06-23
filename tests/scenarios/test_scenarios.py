@@ -1,11 +1,20 @@
-"""Live scenario tests — parametrised across all YAML scenario files.
+"""Live scenario tests — the evaluator-as-reviewer gate.
 
-These make real LLM API calls and are skipped by default.
+These make real LLM API calls and are skipped by default. They run the agent
+against each ``scenarios/*.yaml`` and apply two layers:
+
+- **Deterministic assertions** (``expect`` block) — objective, repeatable;
+  these are HARD failures.
+- **LLM-as-judge** (``futureself.judge``) — rubric scoring; advisory, but a
+  score below ``JUDGE_FLOOR`` (default 3/5) fails to catch egregious regressions.
+
 Run with:  uv run pytest tests/scenarios/ -m live -v
-Requires:  AZURE_FOUNDRY_ENDPOINT env var (and Azure credentials).
+Requires:  ANTHROPIC_API_KEY (Anthropic direct) and FUTURESELF_MODEL.
+Optional:  JUDGE_MODEL (default claude-opus-4-8), JUDGE_FLOOR (default 3).
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -14,12 +23,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from futureself.eval import evaluate_turn  # noqa: E402
+from futureself import judge  # noqa: E402
+from futureself.eval import check_expectations  # noqa: E402
 from futureself.orchestrator import run_turn  # noqa: E402
 from futureself.schemas import UserBlueprint  # noqa: E402
 
 SCENARIO_DIR = Path(__file__).parent.parent.parent / "scenarios"
 SCENARIO_FILES = sorted(SCENARIO_DIR.glob("*.yaml"))
+_JUDGE_FLOOR = int(os.getenv("JUDGE_FLOOR", "3"))
 
 
 @pytest.mark.live
@@ -32,21 +43,39 @@ SCENARIO_FILES = sorted(SCENARIO_DIR.glob("*.yaml"))
 async def test_scenario(scenario_path: Path) -> None:
     scenario = yaml.safe_load(scenario_path.read_text(encoding="utf-8"))
     blueprint = UserBlueprint.from_dict(scenario.get("user_blueprint", {}))
+    rubric = judge.DEFAULT_RUBRIC + list(scenario.get("rubric", []))
 
     for i, turn in enumerate(scenario.get("turns", []), start=1):
         user_msg = turn["user_message"].strip()
         result = await run_turn(blueprint, user_msg)
+        reply = result.user_facing_reply
 
-        # Hard assertions — must always hold
-        assert result.user_facing_reply, "Agent produced an empty reply"
-
-        # Structured evaluation
-        turn_eval = evaluate_turn(scenario["name"], i, turn, result)
-
-        print(
-            f"  [EVAL] {scenario['name']} turn {i}: "
-            f"reply={turn_eval.reply_length} chars, latency={turn_eval.latency_ms:.0f}ms"
+        # --- Hard gate: deterministic assertions ---
+        assertions = check_expectations(reply, turn.get("expect"))
+        failures = [f"{a.name} ({a.detail})" for a in assertions if not a.passed]
+        assert not failures, (
+            f"{scenario['name']} turn {i} failed assertions: {failures}\n"
+            f"reply: {reply[:300]}"
         )
 
-        # Carry forward
+        # --- Advisory gate: LLM-as-judge ---
+        verdict = judge.judge_reply(
+            user_message=user_msg,
+            reply=reply,
+            scenario_description=scenario.get("description", ""),
+            rubric=rubric,
+        )
+        print(
+            f"  [JUDGE] {scenario['name']} turn {i}: "
+            f"overall={verdict.overall_score}/5 passed={verdict.passed} "
+            f"err={verdict.error}"
+        )
+        for c in verdict.criteria:
+            print(f"          - {c.name}: {c.score}/5 — {c.comment}")
+        if verdict.error is None:
+            assert verdict.overall_score >= _JUDGE_FLOOR, (
+                f"{scenario['name']} turn {i} judge score "
+                f"{verdict.overall_score} < floor {_JUDGE_FLOOR}: {verdict.rationale}"
+            )
+
         blueprint = result.updated_blueprint

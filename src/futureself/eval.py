@@ -1,6 +1,26 @@
 """Deterministic evaluation of orchestrator results against scenario expectations.
 
-No LLM calls — compares expected vs actual using scenario YAML declarations.
+No LLM calls. Two layers:
+
+- Smoke signals — reply length, non-empty, latency (always computed).
+- Assertions — a scenario turn's optional ``expect`` block is checked against the
+  actual reply (length bounds, required topical keywords, forbidden phrases).
+
+Assertions are objective and repeatable, so they form the *hard* pass/fail gate.
+Subjective quality scoring lives in :mod:`futureself.judge` (LLM-as-judge).
+
+``expect`` block schema (all keys optional)::
+
+    expect:
+      min_length: 150            # reply must be at least N chars
+      max_length: 4000           # reply must be at most N chars
+      must_include_all:          # every phrase must appear (case-insensitive)
+        - "..."
+      must_include_any:          # each group must contribute >=1 match
+        - ["rest", "recover", "sleep"]
+        - ["debt", "finance", "money"]
+      forbidden:                 # none of these may appear (case-insensitive)
+        - "load_skill"
 """
 from __future__ import annotations
 
@@ -9,6 +29,15 @@ import json
 from typing import Any
 
 from futureself.schemas import OrchestratorResult
+
+
+@dataclasses.dataclass
+class AssertionResult:
+    """Outcome of a single deterministic check against a reply."""
+
+    name: str
+    passed: bool
+    detail: str
 
 
 @dataclasses.dataclass
@@ -25,6 +54,10 @@ class TurnEval:
     # Latency from trace (if available)
     latency_ms: float
 
+    # Deterministic assertions from the turn's ``expect`` block
+    assertions: list[AssertionResult] = dataclasses.field(default_factory=list)
+    passed: bool = True
+
 
 @dataclasses.dataclass
 class ScenarioEval:
@@ -33,6 +66,78 @@ class ScenarioEval:
     scenario_name: str
     turns: list[TurnEval]
     all_replies_non_empty: bool
+    all_passed: bool = True
+
+
+def check_expectations(reply: str, expect: dict[str, Any] | None) -> list[AssertionResult]:
+    """Check a reply against a turn's ``expect`` block. Deterministic, no LLM.
+
+    Args:
+        reply: The Future Self reply text.
+        expect: The turn's optional ``expect`` mapping (see module docstring).
+
+    Returns:
+        One :class:`AssertionResult` per check. ``non_empty`` is always present.
+    """
+    results: list[AssertionResult] = [
+        AssertionResult(
+            "non_empty",
+            bool(reply.strip()),
+            f"{len(reply)} chars",
+        )
+    ]
+    if not expect:
+        return results
+
+    low = reply.lower()
+
+    if (min_length := expect.get("min_length")) is not None:
+        results.append(
+            AssertionResult(
+                "min_length",
+                len(reply) >= min_length,
+                f"{len(reply)} >= {min_length}",
+            )
+        )
+
+    if (max_length := expect.get("max_length")) is not None:
+        results.append(
+            AssertionResult(
+                "max_length",
+                len(reply) <= max_length,
+                f"{len(reply)} <= {max_length}",
+            )
+        )
+
+    for phrase in expect.get("must_include_all", []) or []:
+        results.append(
+            AssertionResult(
+                "must_include_all",
+                phrase.lower() in low,
+                f"contains {phrase!r}",
+            )
+        )
+
+    for group in expect.get("must_include_any", []) or []:
+        hit = next((w for w in group if w.lower() in low), None)
+        results.append(
+            AssertionResult(
+                "must_include_any",
+                hit is not None,
+                f"any of {group} -> {hit!r}",
+            )
+        )
+
+    for phrase in expect.get("forbidden", []) or []:
+        results.append(
+            AssertionResult(
+                "forbidden",
+                phrase.lower() not in low,
+                f"absent {phrase!r}",
+            )
+        )
+
+    return results
 
 
 def evaluate_turn(
@@ -43,13 +148,17 @@ def evaluate_turn(
 ) -> TurnEval:
     """Build a TurnEval from scenario expectations and actual results."""
     latency = result.llm_traces[0].latency_ms if result.llm_traces else 0.0
+    reply = result.user_facing_reply
+    assertions = check_expectations(reply, turn_spec.get("expect"))
 
     return TurnEval(
         scenario_name=scenario_name,
         turn_index=turn_index,
-        reply_length=len(result.user_facing_reply),
-        reply_non_empty=bool(result.user_facing_reply),
+        reply_length=len(reply),
+        reply_non_empty=bool(reply),
         latency_ms=latency,
+        assertions=assertions,
+        passed=all(a.passed for a in assertions),
     )
 
 
@@ -67,6 +176,7 @@ def evaluate_scenario(
         scenario_name=scenario_name,
         turns=turn_evals,
         all_replies_non_empty=all(t.reply_non_empty for t in turn_evals),
+        all_passed=all(t.passed for t in turn_evals),
     )
 
 
@@ -82,6 +192,11 @@ def format_report(evals: list[ScenarioEval]) -> str:
             icon = "OK" if turn.reply_non_empty else "EMPTY"
             lines.append(f"  Reply:    [{icon}] {turn.reply_length} chars")
             lines.append(f"  Latency:  {turn.latency_ms:.0f}ms")
+            for a in turn.assertions:
+                mark = "PASS" if a.passed else "FAIL"
+                lines.append(f"  [{mark}] {a.name}: {a.detail}")
+        verdict = "PASS" if scenario_eval.all_passed else "FAIL"
+        lines.append(f"\n  Scenario verdict: {verdict}")
     return "\n".join(lines)
 
 

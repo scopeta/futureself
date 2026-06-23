@@ -1,14 +1,17 @@
-name: Live Scenario Tests
+name: Live Eval Gate
 
+# Evaluator-as-reviewer: runs the agent against scenarios/*.yaml and applies
+# deterministic assertions (hard) + LLM-as-judge (advisory floor). Costs real
+# Anthropic tokens, so it is manual-dispatch only. To run it as a nightly gate,
+# uncomment the `schedule` block below.
 on:
   workflow_dispatch:
+  # schedule:
+  #   - cron: "0 6 * * 1"   # Mondays 06:00 UTC
 
 jobs:
   live:
     runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -18,14 +21,10 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev --prerelease=allow
 
-      - name: Azure login
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Run live scenarios
+      - name: Run live eval (assertions + LLM-as-judge)
         env:
-          AZURE_FOUNDRY_ENDPOINT: ${{ secrets.AZURE_FOUNDRY_ENDPOINT }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          FUTURESELF_MODEL: ${{ vars.FUTURESELF_MODEL || 'claude-opus-4-8' }}
+          JUDGE_MODEL: ${{ vars.JUDGE_MODEL || 'claude-opus-4-8' }}
+          JUDGE_FLOOR: ${{ vars.JUDGE_FLOOR || '3' }}
         run: uv run --prerelease=allow pytest tests/scenarios/ -m live -v

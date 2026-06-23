@@ -17,8 +17,27 @@ user_blueprint:
     income_usd_annual: 62000
     family_situation: single
 
+# Extra judge criteria appended to judge.DEFAULT_RUBRIC.
+rubric:
+  - "Holds the tension between rest and debt; does not simply tell them to grind harder, nor ignore the debt."
+
 turns:
   - user_message: >
       I'm burned out and behind on my finances. I have about $12,000 in
       credit card debt. Should I take on more freelance work to pay it
       off faster, or should I just rest?
+    expect:
+      min_length: 150
+      max_length: 4000
+      forbidden:
+        - "load_skill"
+        - "load the skill"
+        - "load the relevant skill"
+        - "i'll load"
+        - "let me load"
+        - "as an ai"
+        - "language model"
+        - "system prompt"
+      must_include_any:
+        - ["rest", "recover", "sleep", "burnout", "pause"]
+        - ["debt", "financ", "money", "freelance"]

@@ -8,6 +8,7 @@ import pytest
 from futureself.eval import (
     ScenarioEval,
     TurnEval,
+    check_expectations,
     evaluate_scenario,
     evaluate_turn,
     format_report,
@@ -93,6 +94,94 @@ def test_format_report_produces_output():
     report = format_report([ev])
     assert "test" in report
     assert "OK" in report
+
+
+# ---------------------------------------------------------------------------
+# Deterministic assertions (check_expectations)
+# ---------------------------------------------------------------------------
+
+
+def test_check_expectations_always_has_non_empty():
+    results = check_expectations("hello", None)
+    assert results[0].name == "non_empty"
+    assert results[0].passed is True
+
+
+def test_check_expectations_non_empty_fails_on_blank():
+    results = check_expectations("   ", None)
+    assert results[0].name == "non_empty"
+    assert results[0].passed is False
+
+
+def test_check_expectations_forbidden_phrase_detected():
+    reply = "Let me load the relevant skills first."
+    results = check_expectations(reply, {"forbidden": ["let me load", "load_skill"]})
+    forbidden = [r for r in results if r.name == "forbidden"]
+    assert any(r.passed is False for r in forbidden)  # "let me load" present
+
+
+def test_check_expectations_forbidden_absent_passes():
+    results = check_expectations("A clean reply.", {"forbidden": ["load_skill"]})
+    assert all(r.passed for r in results if r.name == "forbidden")
+
+
+def test_check_expectations_min_and_max_length():
+    results = check_expectations("short", {"min_length": 100, "max_length": 3})
+    by_name = {r.name: r for r in results}
+    assert by_name["min_length"].passed is False
+    assert by_name["max_length"].passed is False
+
+
+def test_check_expectations_must_include_any_group():
+    reply = "You should rest and recover before taking on more debt."
+    expect = {"must_include_any": [["rest", "sleep"], ["debt", "money"]]}
+    results = check_expectations(reply, expect)
+    groups = [r for r in results if r.name == "must_include_any"]
+    assert len(groups) == 2
+    assert all(r.passed for r in groups)
+
+
+def test_check_expectations_must_include_any_missing_group_fails():
+    reply = "You should rest."
+    expect = {"must_include_any": [["rest"], ["debt", "money"]]}
+    results = check_expectations(reply, expect)
+    groups = [r for r in results if r.name == "must_include_any"]
+    assert groups[0].passed is True
+    assert groups[1].passed is False
+
+
+def test_evaluate_turn_populates_assertions_and_passed():
+    turn_spec = {
+        "user_message": "I'm in debt and exhausted.",
+        "expect": {
+            "min_length": 5,
+            "forbidden": ["load_skill"],
+            "must_include_any": [["rest"]],
+        },
+    }
+    result = _make_result("You should rest and recover.")
+    ev = evaluate_turn("s", 1, turn_spec, result)
+    assert ev.passed is True
+    assert {a.name for a in ev.assertions} >= {"non_empty", "min_length", "forbidden", "must_include_any"}
+
+
+def test_evaluate_turn_fails_when_assertion_fails():
+    turn_spec = {"user_message": "x", "expect": {"forbidden": ["rest"]}}
+    result = _make_result("You should rest.")
+    ev = evaluate_turn("s", 1, turn_spec, result)
+    assert ev.passed is False
+
+
+def test_evaluate_scenario_all_passed_field():
+    turns_spec = [
+        {"user_message": "a", "expect": {"must_include_any": [["yes"]]}},
+        {"user_message": "b", "expect": {"forbidden": ["no"]}},
+    ]
+    results = [_make_result("yes indeed"), _make_result("no way")]
+    ev = evaluate_scenario("s", turns_spec, results)
+    assert ev.turns[0].passed is True
+    assert ev.turns[1].passed is False
+    assert ev.all_passed is False
 
 
 def test_to_json_produces_valid_json():

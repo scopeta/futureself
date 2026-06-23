@@ -4,6 +4,7 @@ Usage:
     python simulate.py --scenario motorcycle_purchase
     python simulate.py --scenario burnout_and_debt --verbose
     python simulate.py --scenario motorcycle_purchase --eval
+    python simulate.py --scenario motorcycle_purchase --eval --judge
     python simulate.py --scenario motorcycle_purchase --traces
     python simulate.py --scenario motorcycle_purchase --eval-json
     python simulate.py --list
@@ -20,6 +21,7 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)  # reads .env from the project root; overrides system env vars
 
+from futureself import judge
 from futureself.eval import (
     ScenarioEval,
     evaluate_scenario,
@@ -102,7 +104,14 @@ def print_result(result: OrchestratorResult, turn_num: int, verbose: bool, show_
 # ---------------------------------------------------------------------------
 
 
-async def run_scenario(name: str, verbose: bool, show_eval: bool, show_traces: bool, eval_json: bool) -> None:
+async def run_scenario(
+    name: str,
+    verbose: bool,
+    show_eval: bool,
+    show_traces: bool,
+    eval_json: bool,
+    show_judge: bool,
+) -> None:
     scenario = load_scenario(name)
 
     if not eval_json:
@@ -127,7 +136,7 @@ async def run_scenario(name: str, verbose: bool, show_eval: bool, show_traces: b
         # Carry forward updated blueprint
         blueprint = result.updated_blueprint
 
-    # Evaluation
+    # Deterministic evaluation (assertions are computed from each turn's `expect`)
     scenario_eval = evaluate_scenario(scenario["name"], turns_spec, results)
 
     if eval_json:
@@ -135,8 +144,31 @@ async def run_scenario(name: str, verbose: bool, show_eval: bool, show_traces: b
     elif show_eval:
         print(format_report([scenario_eval]))
 
+    # LLM-as-judge (opt-in: costs an extra completion per turn)
+    if show_judge and not eval_json:
+        print_judge(scenario, turns_spec, results)
+
     if not eval_json:
         print_header("Scenario Complete")
+
+
+def print_judge(scenario: dict, turns_spec: list[dict], results: list[OrchestratorResult]) -> None:
+    """Run the LLM-as-judge over each turn and print rubric scores."""
+    rubric = judge.DEFAULT_RUBRIC + list(scenario.get("rubric", []))
+    print_header("LLM-as-Judge")
+    for i, (turn, result) in enumerate(zip(turns_spec, results), start=1):
+        verdict = judge.judge_reply(
+            user_message=turn["user_message"].strip(),
+            reply=result.user_facing_reply,
+            scenario_description=scenario.get("description", ""),
+            rubric=rubric,
+        )
+        status = verdict.error or f"overall {verdict.overall_score}/5 (passed={verdict.passed})"
+        print(f"\nTurn {i}: {status}")
+        for c in verdict.criteria:
+            print(f"  - {c.name}: {c.score}/5 — {c.comment}")
+        if verdict.rationale:
+            print(f"  rationale: {verdict.rationale}")
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +206,12 @@ def main() -> None:
         help="Print LLM call traces (model, tokens, latency)",
     )
     parser.add_argument(
+        "--judge", "-j",
+        action="store_true",
+        dest="show_judge",
+        help="Run the LLM-as-judge rubric scorer (extra LLM call per turn)",
+    )
+    parser.add_argument(
         "--list", "-l",
         action="store_true",
         help="List available scenarios and exit",
@@ -193,6 +231,7 @@ def main() -> None:
 
     asyncio.run(run_scenario(
         args.scenario, args.verbose, args.show_eval, args.traces, args.eval_json,
+        args.show_judge,
     ))
 
 
