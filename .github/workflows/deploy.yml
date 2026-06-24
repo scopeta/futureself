@@ -81,14 +81,20 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           az extension add --name containerapp --upgrade -y
+          # Sensitive values live as Container App SECRETS; env vars reference them
+          # via secretref:* so they never appear as plaintext in the app config.
           if az containerapp show -n futureself -g "$RG" &>/dev/null; then
-            echo "Existing app found — zero-downtime rolling update"
+            echo "Existing app found — set secrets, then zero-downtime rolling update"
+            az containerapp secret set -n futureself -g "$RG" --secrets \
+              anthropic-api-key="$ANTHROPIC_API_KEY" \
+              database-url="$DATABASE_URL" \
+              appinsights-conn="$APPLICATIONINSIGHTS_CONNECTION_STRING"
             az containerapp update -n futureself -g "$RG" --image "$IMG" \
               --set-env-vars \
                 FUTURESELF_MODEL="$MODEL" \
-                ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
-                APPLICATIONINSIGHTS_CONNECTION_STRING="$APPLICATIONINSIGHTS_CONNECTION_STRING" \
-                DATABASE_URL="$DATABASE_URL"
+                ANTHROPIC_API_KEY=secretref:anthropic-api-key \
+                APPLICATIONINSIGHTS_CONNECTION_STRING=secretref:appinsights-conn \
+                DATABASE_URL=secretref:database-url
           else
             echo "No app — first-time create"
             ENV_LOCATION=$(az containerapp env show -n futureself-env -g "$RG" --query location -o tsv 2>/dev/null || echo "")
@@ -101,9 +107,13 @@ jobs:
               --registry-username ${{ secrets.ACR_USERNAME }} \
               --registry-password ${{ secrets.ACR_PASSWORD }} \
               --target-port 8000 --ingress external \
+              --secrets \
+                anthropic-api-key="$ANTHROPIC_API_KEY" \
+                database-url="$DATABASE_URL" \
+                appinsights-conn="$APPLICATIONINSIGHTS_CONNECTION_STRING" \
               --env-vars \
                 FUTURESELF_MODEL="$MODEL" \
-                ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
-                APPLICATIONINSIGHTS_CONNECTION_STRING="$APPLICATIONINSIGHTS_CONNECTION_STRING" \
-                DATABASE_URL="$DATABASE_URL"
+                ANTHROPIC_API_KEY=secretref:anthropic-api-key \
+                APPLICATIONINSIGHTS_CONNECTION_STRING=secretref:appinsights-conn \
+                DATABASE_URL=secretref:database-url
           fi

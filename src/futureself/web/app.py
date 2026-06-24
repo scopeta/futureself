@@ -1,7 +1,10 @@
 """FastAPI application — JSON API backend for the FutureSelf React UI."""
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -29,11 +32,38 @@ if _appinsights_conn:
         pass
 
 _FRONTEND_DIST = Path(__file__).parent.parent.parent.parent / "frontend" / "dist"
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+logger = logging.getLogger(__name__)
+
+
+def _run_migrations() -> None:
+    """Apply Alembic migrations up to head (sync; runs in a worker thread)."""
+    from alembic import command  # noqa: PLC0415
+    from alembic.config import Config  # noqa: PLC0415
+
+    cfg = Config(str(_REPO_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(_REPO_ROOT / "alembic"))
+    command.upgrade(cfg, "head")
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):  # noqa: ANN201, ARG001
+    """On startup, bring the DB schema to head so a fresh database can't 500.
+
+    Gated on ``DATABASE_URL`` so local dev / unit tests (which use a direct
+    SQLite engine and never set it) skip migrations entirely. A migration
+    failure fails startup fast rather than serving on a bad schema.
+    """
+    if os.getenv("DATABASE_URL"):
+        logger.info("Applying database migrations (alembic upgrade head)...")
+        await asyncio.to_thread(_run_migrations)
+        logger.info("Database migrations applied.")
+    yield
 
 
 def create_app() -> FastAPI:
     """Build and configure the FastAPI application."""
-    application = FastAPI(title="FutureSelf")
+    application = FastAPI(title="FutureSelf", lifespan=_lifespan)
 
     # Initialise database engine — DATABASE_URL is required in production.
     from futureself.db.engine import init_engine  # noqa: PLC0415

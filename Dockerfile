@@ -39,6 +39,8 @@ COPY --from=frontend-builder /frontend/dist frontend/dist
 
 COPY src/ src/
 COPY prompts/ prompts/
+COPY alembic.ini alembic.ini
+COPY alembic/ alembic/
 
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONUNBUFFERED=1
