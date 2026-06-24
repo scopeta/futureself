@@ -1,6 +1,16 @@
 name: Deploy to Azure Container Apps
 
+# Continuous deployment, gated on green CI:
+#   push to main → CI (ci.yml) runs tests → on success this workflow fires and
+#   deploys the exact tested commit. Manual dispatch is also supported.
+# Deploy is a ZERO-DOWNTIME rolling update (az containerapp update --image) — the
+# app keeps its URL and the old revision serves until the new one is healthy. On
+# first run (no app yet) it creates the app + environment.
 on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       image_tag:
@@ -8,30 +18,38 @@ on:
         required: false
         default: ""
       futureself_model:
-        description: "Model deployment name in Foundry (e.g. claude-opus-4-6, gpt-4o)"
-        required: true
+        description: "Model name (default: claude-opus-4-8)"
+        required: false
+        default: "claude-opus-4-8"
 
 env:
-  ACR_NAME: ${{ secrets.ACR_LOGIN_SERVER }}
   IMAGE_NAME: futureself
 
 jobs:
   build-and-deploy:
+    # Auto path runs only when CI succeeded; manual dispatch always runs.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Set image tag
-        id: tag
+      - name: Resolve commit, tag, model
+        id: vars
         run: |
+          SHA="${{ github.event.workflow_run.head_sha }}"
+          [ -z "$SHA" ] && SHA="${{ github.sha }}"
           TAG="${{ github.event.inputs.image_tag }}"
-          if [ -z "$TAG" ]; then
-            TAG="${{ github.sha }}"
-          fi
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          [ -z "$TAG" ] && TAG="$SHA"
+          MODEL="${{ github.event.inputs.futureself_model }}"
+          [ -z "$MODEL" ] && MODEL="claude-opus-4-8"
+          echo "sha=$SHA"   >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG"   >> "$GITHUB_OUTPUT"
+          echo "model=$MODEL" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.vars.outputs.sha }}
 
       - name: Log in to Azure Container Registry
         uses: docker/login-action@v3
@@ -40,10 +58,11 @@ jobs:
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
 
-      - name: Build and push Docker image
+      - name: Build and push image
         run: |
-          docker build -t $ACR_NAME/$IMAGE_NAME:${{ steps.tag.outputs.tag }} .
-          docker push $ACR_NAME/$IMAGE_NAME:${{ steps.tag.outputs.tag }}
+          IMG="${{ secrets.ACR_LOGIN_SERVER }}/${IMAGE_NAME}:${{ steps.vars.outputs.tag }}"
+          docker build -t "$IMG" .
+          docker push "$IMG"
 
       - name: Log in to Azure
         uses: azure/login@v2
@@ -52,34 +71,39 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Deploy to Azure Container Apps
+      - name: Deploy (zero-downtime rolling update; create on first run)
+        env:
+          RG: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          IMG: ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.tag }}
+          MODEL: ${{ steps.vars.outputs.model }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          APPLICATIONINSIGHTS_CONNECTION_STRING: ${{ secrets.APPLICATIONINSIGHTS_CONNECTION_STRING }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           az extension add --name containerapp --upgrade -y
-
-          # Delete app if it exists (clean slate avoids stuck Failed state)
-          if az containerapp show --name futureself --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} &>/dev/null; then
-            az containerapp delete --name futureself --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} --yes
+          if az containerapp show -n futureself -g "$RG" &>/dev/null; then
+            echo "Existing app found — zero-downtime rolling update"
+            az containerapp update -n futureself -g "$RG" --image "$IMG" \
+              --set-env-vars \
+                FUTURESELF_MODEL="$MODEL" \
+                ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+                APPLICATIONINSIGHTS_CONNECTION_STRING="$APPLICATIONINSIGHTS_CONNECTION_STRING" \
+                DATABASE_URL="$DATABASE_URL"
+          else
+            echo "No app — first-time create"
+            ENV_LOCATION=$(az containerapp env show -n futureself-env -g "$RG" --query location -o tsv 2>/dev/null || echo "")
+            if [ "$ENV_LOCATION" != "Southeast Asia" ]; then
+              az containerapp env create -n futureself-env -g "$RG" --location southeastasia
+            fi
+            az containerapp create -n futureself -g "$RG" \
+              --environment futureself-env --image "$IMG" \
+              --registry-server ${{ secrets.ACR_LOGIN_SERVER }} \
+              --registry-username ${{ secrets.ACR_USERNAME }} \
+              --registry-password ${{ secrets.ACR_PASSWORD }} \
+              --target-port 8000 --ingress external \
+              --env-vars \
+                FUTURESELF_MODEL="$MODEL" \
+                ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+                APPLICATIONINSIGHTS_CONNECTION_STRING="$APPLICATIONINSIGHTS_CONNECTION_STRING" \
+                DATABASE_URL="$DATABASE_URL"
           fi
-
-          # Recreate environment in southeastasia if not already there
-          ENV_LOCATION=$(az containerapp env show --name futureself-env --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} --query location -o tsv 2>/dev/null || echo "")
-          if [ "$ENV_LOCATION" != "Southeast Asia" ]; then
-            az containerapp env delete --name futureself-env --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} --yes 2>/dev/null || true
-            az containerapp env create --name futureself-env --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} --location southeastasia
-          fi
-
-          az containerapp create \
-            --name futureself \
-            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
-            --environment futureself-env \
-            --image ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.tag }} \
-            --registry-server ${{ secrets.ACR_LOGIN_SERVER }} \
-            --registry-username ${{ secrets.ACR_USERNAME }} \
-            --registry-password ${{ secrets.ACR_PASSWORD }} \
-            --target-port 8000 \
-            --ingress external \
-            --env-vars \
-              FUTURESELF_MODEL="${{ github.event.inputs.futureself_model }}" \
-              ANTHROPIC_API_KEY="${{ secrets.ANTHROPIC_API_KEY }}" \
-              APPLICATIONINSIGHTS_CONNECTION_STRING="${{ secrets.APPLICATIONINSIGHTS_CONNECTION_STRING }}" \
-              DATABASE_URL="${{ secrets.DATABASE_URL }}"

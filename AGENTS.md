@@ -63,6 +63,10 @@ When rebuilding or refactoring, resolve conflicts in this order:
 - **`ci.yml`** — runs on every push/PR to `main`: installs deps, runs `pytest tests/ -v`.
   Live tests are excluded by default (`-m 'not live'`).
 - **`live.yml`** — manual dispatch only; requires Azure credentials; runs live scenario tests.
-- **`deploy.yml`** — manual dispatch; builds container, pushes to ACR
-  (`futureselfacr.azurecr.io`), deploys to Azure Container Apps (Southeast Asia).
+- **`deploy.yml`** — continuous deployment gated on green CI: a successful `ci.yml`
+  run on `main` triggers it via `workflow_run` (manual dispatch also supported).
+  Builds the container, pushes to ACR, and rolls it out to Azure Container Apps
+  (Southeast Asia) as a **zero-downtime update** (`az containerapp update --image`;
+  stable URL, old revision serves until the new one is healthy; creates the app on
+  first run).
 - `main` is the default branch. CI must pass before merging.
