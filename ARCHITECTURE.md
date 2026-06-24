@@ -34,7 +34,7 @@ flowchart TD
         UI["React + Vite SPA<br/>chat + blueprint pages"]
     end
 
-    subgraph Backend["FastAPI BFF (web/app.py)"]
+    subgraph Backend["FastAPI BFF — web/app.py"]
         Routes["routes/api.py<br/>/api/* endpoints"]
         SessionMod["session.py<br/>Bearer token to user"]
         Orch["orchestrator.run_turn<br/>1 turn = 1 LLM call"]
@@ -46,7 +46,7 @@ flowchart TD
         Skills["skills/*/SKILL.md<br/>6 domains, load on demand"]
     end
 
-    Claude["Claude (Anthropic direct)<br/>AnthropicClient"]
+    Claude["Claude — Anthropic direct<br/>AnthropicClient"]
     DB[("PostgreSQL<br/>users / blueprints / sessions")]
 
     UI -->|"Bearer token + JSON"| Routes
@@ -54,12 +54,12 @@ flowchart TD
     SessionMod <-->|"load / save Blueprint"| DB
     Routes --> Orch
     Orch --> Builder --> Agent
-    Agent -->|"load_skill(name)"| Skills
+    Agent -->|"load_skill"| Skills
     Agent -->|"chat completion"| Claude
     Claude -->|"reply"| Agent --> Orch
     Orch -->|"reply"| Routes --> UI
 
-    Foundry["main.py<br/>Responses host (optional Foundry on-ramp)"]
+    Foundry["main.py<br/>Responses host — optional Foundry on-ramp"]
     Foundry -.->|"same builder"| Builder
 ```
 
@@ -78,7 +78,7 @@ What happens on a single `POST /api/chat/send`:
 
 ```mermaid
 sequenceDiagram
-    actor U as User (SPA)
+    actor U as User SPA
     participant API as routes/api.py
     participant S as session.py
     participant DB as PostgreSQL
@@ -103,7 +103,7 @@ sequenceDiagram
     O-->>API: OrchestratorResult (reply, updated Blueprint, trace)
     API->>S: save updated Blueprint
     S->>DB: UPDATE blueprints.data
-    API-->>U: { reply }
+    API-->>U: reply JSON
 ```
 
 Key invariants enforced here:
@@ -125,10 +125,10 @@ domain reasoning body).
 
 ```mermaid
 flowchart LR
-    SP["SkillsProvider.from_paths(skills/)"] --> M["Inject manifest into system prompt<br/>(name + description only, ~100 tokens each)"]
+    SP["SkillsProvider.from_paths skills/"] --> M["Inject manifest into system prompt<br/>name + description only, ~100 tokens each"]
     M --> D{"LLM decides<br/>which domains are relevant"}
-    D -->|"load_skill('physical-health')"| B1["return full SKILL.md body"]
-    D -->|"load_skill('financial')"| B2["return full SKILL.md body"]
+    D -->|"load physical-health"| B1["return full SKILL.md body"]
+    D -->|"load financial"| B2["return full SKILL.md body"]
     B1 --> Synth["Synthesize Future Self reply"]
     B2 --> Synth
 ```
@@ -167,7 +167,7 @@ erDiagram
     blueprints {
         uuid id PK
         uuid user_id FK
-        json data "full UserBlueprint (JSONB)"
+        json data "full UserBlueprint, JSONB"
         datetime updated_at
     }
     sessions {
@@ -205,10 +205,10 @@ The same agent builder supports two backends, chosen by environment variable:
 
 ```mermaid
 flowchart TD
-    Start["build_agent(model)"] --> Q{"AZURE_FOUNDRY_ENDPOINT set?"}
-    Q -->|"yes"| F["FoundryChatClient<br/>(Entra ID auth, model-agnostic)"]
+    Start["build_agent model"] --> Q{"AZURE_FOUNDRY_ENDPOINT set?"}
+    Q -->|"yes"| F["FoundryChatClient<br/>Entra ID auth, model-agnostic"]
     Q -->|"no"| Akey{"ANTHROPIC_API_KEY set?"}
-    Akey -->|"yes"| AC["AnthropicClient<br/>(Claude direct) — ACTIVE"]
+    Akey -->|"yes"| AC["AnthropicClient<br/>Claude direct — ACTIVE"]
     Akey -->|"no"| Err["raise ValueError"]
 ```
 
@@ -290,12 +290,12 @@ changes land on `main`. It runs in two tiers:
 
 ```mermaid
 flowchart LR
-    subgraph Blocking["Per-push CI (ci.yml) — no LLM"]
+    subgraph Blocking["Per-push CI — ci.yml, no LLM"]
         U["pytest tests/<br/>incl. evaluator-logic unit tests"]
     end
-    subgraph LiveGate["Live Eval Gate (live.yml) — real Claude"]
-        D["Deterministic assertions<br/>(scenario expect blocks) — HARD"]
-        J["LLM-as-judge rubric<br/>(judge.py) — advisory floor"]
+    subgraph LiveGate["Live Eval Gate — live.yml, real Claude"]
+        D["Deterministic assertions<br/>scenario expect blocks — HARD"]
+        J["LLM-as-judge rubric<br/>judge.py — advisory floor"]
     end
     U --> D --> J
 ```
