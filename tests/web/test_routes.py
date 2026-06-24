@@ -78,6 +78,26 @@ async def test_session_create_each_call_returns_unique_token(client):
 # ---------------------------------------------------------------------------
 
 
+async def test_chat_send_rejects_oversized_message(client):
+    token = await _create_session(client)
+    resp = await client.post(
+        "/api/chat/send",
+        json={"message": "x" * 8001},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 422
+
+
+async def test_chat_send_rejects_empty_message(client):
+    token = await _create_session(client)
+    resp = await client.post(
+        "/api/chat/send",
+        json={"message": ""},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 422
+
+
 async def test_chat_send_without_auth_returns_401(client):
     resp = await client.post("/api/chat/send", json={"message": "hello"})
     assert resp.status_code == 401

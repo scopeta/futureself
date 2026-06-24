@@ -5,7 +5,7 @@ import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from futureself.db.engine import get_db
@@ -66,7 +66,9 @@ async def session_create(db: DB) -> dict:
 
 
 class ChatRequest(BaseModel):
-    message: str
+    # Cap input size: rejects empty and oversized messages (cost/abuse control on
+    # the anonymous, paid-LLM endpoint). Oversize/empty → 422 before any LLM call.
+    message: str = Field(min_length=1, max_length=8000)
 
 
 @router.post("/chat/send")
