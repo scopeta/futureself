@@ -50,6 +50,18 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # Hardening: per-IP rate limit on /api/* (anonymous, paid-LLM endpoint) and
+    # security headers on every response. Added after CORS so they sit outside it;
+    # SecurityHeaders added last → outermost → applies even to 429 responses.
+    from futureself.web.security import (  # noqa: PLC0415
+        RateLimitMiddleware,
+        SecurityHeadersMiddleware,
+    )
+    application.add_middleware(
+        RateLimitMiddleware, limit_per_min=int(os.getenv("RATE_LIMIT_PER_MIN", "30"))
+    )
+    application.add_middleware(SecurityHeadersMiddleware)
+
     application.include_router(api_router, prefix="/api")
 
     # Capture incoming HTTP requests as App Insights "requests" telemetry.
