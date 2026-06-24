@@ -9,16 +9,30 @@ from unittest.mock import AsyncMock, patch
 
 from httpx import AsyncClient
 
-from futureself.schemas import OrchestratorResult, UserBlueprint
+from futureself.schemas import LLMCallTrace, OrchestratorResult, UserBlueprint
 
 
 def _mock_result(
     reply: str = "Hello from the future.",
     blueprint: UserBlueprint | None = None,
+    model_actual: str | None = None,
 ) -> OrchestratorResult:
+    traces = (
+        [
+            LLMCallTrace(
+                task="orchestrator.run_turn",
+                model_requested="claude-opus-4-8",
+                model_actual=model_actual,
+                latency_ms=0.0,
+            )
+        ]
+        if model_actual is not None
+        else []
+    )
     return OrchestratorResult(
         user_facing_reply=reply,
         updated_blueprint=blueprint or UserBlueprint(inferred_facts=["User greeted"]),
+        llm_traces=traces,
     )
 
 
@@ -135,7 +149,25 @@ async def test_chat_send_does_not_expose_internal_data(mock_run_turn, client):
         json={"message": "test"},
         headers={"Authorization": f"Bearer {token}"},
     )
-    assert set(resp.json().keys()) == {"reply"}
+    # Only the reply + the degraded flag are exposed — no blueprint/bio internals.
+    assert set(resp.json().keys()) == {"reply", "degraded"}
+    assert resp.json()["degraded"] is False
+
+
+@patch("futureself.web.routes.api.run_turn", new_callable=AsyncMock)
+async def test_chat_send_flags_fallback_model(mock_run_turn, client):
+    # A fallback (model_actual set) must be surfaced to the client, never silent.
+    mock_run_turn.return_value = _mock_result("Backup reply.", model_actual="claude-sonnet-4-6")
+    token = await _create_session(client)
+    resp = await client.post(
+        "/api/chat/send",
+        json={"message": "test"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    body = resp.json()
+    assert body["reply"] == "Backup reply."
+    assert body["degraded"] is True
+    assert "notice" in body and body["notice"]
 
 
 # ---------------------------------------------------------------------------

@@ -88,7 +88,19 @@ async def chat_send(body: ChatRequest, request: Request, db: DB) -> dict:
             detail="I'm having trouble gathering my thoughts right now — give me a moment and try again.",
         ) from None
     await save_blueprint(token, result.updated_blueprint, db)
-    return {"reply": result.user_facing_reply}
+
+    # Surface a fallback (a less-capable model served this turn) to the client so
+    # the UI can tell the user — never serve a degraded answer silently. run_turn
+    # records the substitute in LLMCallTrace.model_actual (None on the normal path).
+    trace = result.llm_traces[0] if result.llm_traces else None
+    degraded = bool(trace and trace.model_actual)
+    response: dict = {"reply": result.user_facing_reply, "degraded": degraded}
+    if degraded:
+        response["notice"] = (
+            "I'm answering with a backup model right now because demand is high — "
+            "my reply may be a little less detailed than usual."
+        )
+    return response
 
 
 # ---------------------------------------------------------------------------
