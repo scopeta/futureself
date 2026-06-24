@@ -20,6 +20,7 @@ Skills are lazy-loaded via MAF's ``SkillsProvider``.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import time
@@ -155,6 +156,77 @@ def _extract_facts_simple(reply: str, blueprint: UserBlueprint) -> list[str]:
     return [f for f in candidates if f not in existing]
 
 
+def _is_transient(exc: BaseException) -> bool:
+    """True for provider errors worth retrying / falling back on.
+
+    Matched by HTTP status code (Anthropic/OpenAI SDK errors expose
+    ``status_code``) and by exception class name, so the orchestrator stays
+    provider-agnostic and needs no hard import of a specific SDK.
+    """
+    if getattr(exc, "status_code", None) in {408, 409, 425, 429, 500, 502, 503, 504, 529}:
+        return True
+    return type(exc).__name__ in {
+        "APIConnectionError",
+        "APITimeoutError",
+        "InternalServerError",
+        "RateLimitError",
+        "OverloadedError",
+        "ServiceUnavailableError",
+    }
+
+
+async def _run_agent_once(agent: object, user_ctx: str) -> object:
+    """Run one agent turn (sync session create + async run)."""
+    session = agent.create_session()  # sync — not async
+    return await agent.run(user_ctx, session=session)
+
+
+async def _run_with_resilience(
+    user_ctx: str, model: str, injected_agent: object | None
+) -> tuple[object, str]:
+    """Run the agent, retrying transient errors then falling back to a 2nd model.
+
+    Returns ``(result, model_that_served)``. Re-raises the last error if every
+    attempt fails. A non-transient error (e.g. a bug, a 400) is raised
+    immediately — no retry, no fallback. When ``injected_agent`` is provided
+    (tests), it is used directly and the fallback is skipped.
+
+    Env knobs:
+      ``FUTURESELF_LLM_RETRIES``    extra primary retries on transient errors (default 1)
+      ``FUTURESELF_LLM_BACKOFF``    base backoff seconds, exponential (default 1.0)
+      ``FUTURESELF_FALLBACK_MODEL`` second model tried on sustained transient
+                                    failure (default ``claude-sonnet-4-6``; set
+                                    empty to disable). The Anthropic SDK already
+                                    retries 2× internally per attempt.
+    """
+    retries = int(os.getenv("FUTURESELF_LLM_RETRIES", "1"))
+    backoff = float(os.getenv("FUTURESELF_LLM_BACKOFF", "1.0"))
+    agent = injected_agent if injected_agent is not None else build_agent(model)
+
+    last_exc: BaseException | None = None
+    for attempt in range(retries + 1):
+        try:
+            return await _run_agent_once(agent, user_ctx), model
+        except Exception as exc:  # noqa: BLE001 — classify, then retry / fall back / raise
+            last_exc = exc
+            if not _is_transient(exc) or attempt == retries:
+                break
+            await asyncio.sleep(backoff * (2**attempt))
+
+    fallback = os.getenv("FUTURESELF_FALLBACK_MODEL", "claude-sonnet-4-6").strip()
+    if (
+        injected_agent is None
+        and fallback
+        and fallback != model
+        and last_exc is not None
+        and _is_transient(last_exc)
+    ):
+        return await _run_agent_once(build_agent(fallback), user_ctx), fallback
+
+    assert last_exc is not None  # loop always sets it before breaking
+    raise last_exc
+
+
 async def run_turn(
     user_blueprint: UserBlueprint,
     user_message: str,
@@ -174,13 +246,11 @@ async def run_turn(
         OrchestratorResult with user_facing_reply, updated_blueprint, llm_traces.
     """
     model = _model if _model is not None else _resolve_model()
-    agent = _agent if _agent is not None else build_agent(model)
 
     user_ctx = _build_user_context(user_blueprint, user_message)
 
     t0 = time.monotonic()
-    session = agent.create_session()  # sync
-    result = await agent.run(user_ctx, session=session)
+    result, used_model = await _run_with_resilience(user_ctx, model, _agent)
     latency_ms = (time.monotonic() - t0) * 1000
 
     user_reply: str = result.text or ""
@@ -203,6 +273,7 @@ async def run_turn(
     trace = LLMCallTrace(
         task="orchestrator.run_turn",
         model_requested=model,
+        model_actual=used_model if used_model != model else None,
         latency_ms=latency_ms,
     )
 

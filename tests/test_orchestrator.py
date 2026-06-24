@@ -5,8 +5,17 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from futureself.orchestrator import run_turn, _extract_facts_simple, _build_user_context
+from futureself.orchestrator import (
+    run_turn,
+    _build_user_context,
+    _extract_facts_simple,
+    _is_transient,
+)
 from futureself.schemas import OrchestratorResult, UserBlueprint
+
+
+class _TransientBoom(Exception):
+    status_code = 529
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +113,45 @@ async def test_run_turn_trace_recorded(blank_blueprint):
 # ---------------------------------------------------------------------------
 # 4. extract_facts_simple
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# 3b. Resilience (retry / fallback / error classification)
+# ---------------------------------------------------------------------------
+
+
+def test_is_transient_classifies():
+    assert _is_transient(_TransientBoom()) is True  # status_code 529
+
+    class _Bad(Exception):
+        status_code = 400
+
+    assert _is_transient(_Bad()) is False  # client error, not transient
+
+    class OverloadedError(Exception):
+        pass
+
+    assert _is_transient(OverloadedError()) is True  # matched by class name
+    assert _is_transient(ValueError("bug")) is False
+
+
+@pytest.mark.asyncio
+async def test_run_turn_raises_on_persistent_transient(blank_blueprint, monkeypatch):
+    monkeypatch.setenv("FUTURESELF_LLM_RETRIES", "0")  # no backoff sleeps in test
+    agent = MagicMock()
+    agent.create_session = MagicMock(return_value=MagicMock())
+    agent.run = AsyncMock(side_effect=_TransientBoom("overloaded"))
+    with pytest.raises(_TransientBoom):
+        await run_turn(blank_blueprint, "hi", _agent=agent, _model="test-model")
+
+
+@pytest.mark.asyncio
+async def test_run_turn_raises_non_transient_immediately(blank_blueprint):
+    agent = MagicMock()
+    agent.create_session = MagicMock(return_value=MagicMock())
+    agent.run = AsyncMock(side_effect=ValueError("a real bug"))
+    with pytest.raises(ValueError):
+        await run_turn(blank_blueprint, "hi", _agent=agent, _model="test-model")
 
 
 def test_extract_facts_simple_age():
