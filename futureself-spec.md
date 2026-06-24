@@ -255,15 +255,26 @@ Skill prompt body structure: **Role → Domain Expertise → Prioritization Fram
 
 ## 8. Reliability and Fallback Rules
 
-**No single malformed LLM response may crash a turn.**
+**No single malformed LLM response — or transient provider error — may crash a turn.**
 
-| Failure | Fallback |
+| Failure | Handling |
 |---------|----------|
 | Empty agent reply | Return `OrchestratorResult` with `user_facing_reply=""` |
 | Fact extraction error | Return original blueprint unchanged |
-| Missing `AZURE_FOUNDRY_ENDPOINT` | `_build_agent` raises at call time, not at import |
+| Transient LLM error (429 / 5xx / 529 overload / timeout) | `run_turn` retries with exponential backoff, then falls back to `FUTURESELF_FALLBACK_MODEL` (default `claude-sonnet-4-6`); the serving model is recorded in `LLMCallTrace.model_actual`. If all attempts fail the BFF returns a retryable **503** (never a raw 500). When a fallback model served, the chat response carries `degraded: true` + a notice — degradation is never silent. |
+| Non-transient error (400, bug) | Raised immediately — no retry, no fallback |
+| No LLM provider configured | `build_agent` raises at call time, not at import |
 
-`agent_framework` imports are lazy (inside `_build_agent`) so the module loads in local dev without the cloud SDK installed.
+`agent_framework` imports are lazy (inside `build_agent`) so the module loads in local dev without the cloud SDK installed.
+
+### Operational hardening (deployed)
+
+- **Rate limiting** — per-IP fixed-window on `/api/*` (`RATE_LIMIT_PER_MIN`, default 30); in-memory/per-replica first layer (front with Front Door/APIM for global limits).
+- **Input validation** — chat message capped 1–8000 chars (422 before any LLM call).
+- **Security headers** — `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy`, HSTS on every response.
+- **Secrets** — `ANTHROPIC_API_KEY` / `DATABASE_URL` / App Insights connection string stored as Container App *secrets*, referenced via `secretref:` (not plaintext env).
+- **Migrations** — `alembic upgrade head` runs on startup (FastAPI lifespan, gated on `DATABASE_URL`).
+- **CI/CD** — deploy gated on green CI (`workflow_run`); zero-downtime rolling update (`az containerapp update --image`), stable URL.
 
 ---
 
@@ -339,9 +350,30 @@ def _mock_agent(reply: str) -> MagicMock:
 - Blueprint data quality verification and context drift flagging.
 - Conversation history population.
 
-**Phase 6.5: Identity & Onboarding (Entra ID)** — *Planned*
+**Phase 6.5: Identity & Onboarding (Entra ID)** — *Backend complete (feature-flagged); frontend + activation folded into §11*
 
 Prerequisite slice for productionizing Phase 6: every Blueprint row must be owned by an authenticated user, and no user may read or mutate another user's data.
+
+**Implementation status & sequencing (2026-06-24):**
+
+- **Backend — done, deployed, feature-flagged OFF.** `web/auth.py` validates Entra
+  JWTs (RS256 vs tenant JWKS; `iss`/`aud`/`exp`). `users.oid` (migration `0003`)
+  maps the immutable `oid` → internal `user_id`, created with a blank Blueprint on
+  first login; every Blueprint read/write goes through that server-resolved
+  `user_id` (the authorization invariant). Active **only** when `ENTRA_TENANT_ID` +
+  `ENTRA_CLIENT_ID` are set; otherwise the BFF stays in anonymous session-token
+  mode (production default today, so the app is unchanged). Tests: JWT validity
+  matrix + cross-user denial in `tests/web/test_auth.py`.
+- **Frontend (MSAL.js) + activation — deferred into §11 (Foundry migration).** The
+  React MSAL wiring, SPA redirect-URI registration, and flipping `ENTRA_*` on are
+  done as part of the Foundry Hosted Agents step, so auth is activated **once**
+  against the final topology and lands together with per-user Foundry thread
+  binding (§11.1). The `oid → user_id` resolution above is the prerequisite for
+  that binding — not throwaway work.
+- **Rejected: Azure Container Apps built-in auth (EasyAuth).** It is coupled to the
+  Container Apps platform, which the Foundry move partly supersedes; the portable
+  MSAL.js + backend-JWT design survives the topology change and keeps identity
+  token-based across the BFF → Foundry boundary.
 
 - **Identity provider:** Microsoft Entra ID (workforce tenant initially; multi-tenant External ID configuration deferred to Phase 7 if WhatsApp B2C onboarding requires it).
 - **Auth flow:** OIDC Authorization Code + PKCE from the React UI via MSAL.js. Backend validates Entra-issued JWTs (`iss`, `aud`, signature against tenant JWKS) on every protected request.
@@ -429,9 +461,22 @@ boundaries shift:
 
 ### 11.3 What does *not* change
 - Single-agent rule (Section 2).
-- One LLM call per turn (Section 4).
+- One synthesis pass per turn (~1–2 completions when skills load; Section 4).
 - SkillsProvider and `load_skill` flow (Section 6).
 - Blueprint immutability rule (Section 5.1).
+
+### 11.4 Auth activation (Phase 6.5 completion lands here)
+
+Real Entra login is switched on as part of this migration — against the final
+topology, so it happens once (see Phase 6.5 sequencing):
+- **Frontend:** wire MSAL.js in the React app (login gate, `acquireTokenSilent`,
+  attach `Authorization: Bearer <jwt>`), register the SPA redirect URI in the
+  Entra app registration, and build the frontend with the (public) client/tenant IDs.
+- **Backend:** set `ENTRA_TENANT_ID` + `ENTRA_CLIENT_ID` on the BFF to flip the
+  already-shipped JWT-validation path from anonymous to required (§6.5).
+- **Per-user threads:** bind each user's Foundry thread ID to their `oid` on the
+  `users` row (§11.1), reusing the `oid → user_id` resolution from §6.5. The
+  authorization invariant extends to the thread ID (never client-supplied).
 
 ---
 
