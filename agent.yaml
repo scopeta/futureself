@@ -8,10 +8,18 @@ resources:
   memory: 1Gi
 environmentVariables:
   - name: FUTURESELF_MODEL
-    value: claude-opus-4-7
+    value: claude-opus-4-8
+  # Empty → the hosted agent uses Anthropic-direct (AnthropicClient); Foundry only
+  # hosts the agent and manages thread memory. Do NOT set this for Anthropic-direct.
   - name: AZURE_FOUNDRY_ENDPOINT
+    value: ""
+  # REQUIRED for Anthropic-direct. Supply securely at deploy time (azd env / a
+  # Foundry connection) — never commit the key here.
+  - name: ANTHROPIC_API_KEY
     value: ""
   - name: APPLICATIONINSIGHTS_CONNECTION_STRING
     value: ""
   - name: DEFAULT_FETCH_HISTORY_ITEM_COUNT
     value: "20"
+# FOUNDRY_PROJECT_ENDPOINT is injected automatically by the Foundry platform on
+# deployed agents (enables FoundryStorageProvider thread memory) — not set here.
