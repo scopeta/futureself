@@ -1,6 +1,7 @@
 """JSON REST API routes for the FutureSelf React frontend."""
 from __future__ import annotations
 
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -25,6 +26,7 @@ from futureself.web.session import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 DB = Annotated[AsyncSession, Depends(get_db)]
 
@@ -74,7 +76,17 @@ async def chat_send(body: ChatRequest, request: Request, db: DB) -> dict:
     Requires ``Authorization: Bearer <token>`` header.
     """
     token, blueprint = await _require_blueprint(request, db)
-    result = await run_turn(blueprint, body.message)
+    try:
+        result = await run_turn(blueprint, body.message)
+    except Exception:
+        # The LLM provider can return transient errors (e.g. Anthropic 429/529
+        # overload, timeouts). Don't surface a raw 500 — log the full traceback
+        # for diagnosis and return a retryable 503 with a friendly message.
+        logger.exception("run_turn failed for chat/send")
+        raise HTTPException(
+            status_code=503,
+            detail="I'm having trouble gathering my thoughts right now — give me a moment and try again.",
+        ) from None
     await save_blueprint(token, result.updated_blueprint, db)
     return {"reply": result.user_facing_reply}
 

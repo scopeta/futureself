@@ -94,6 +94,19 @@ async def test_chat_send_returns_reply(mock_run_turn, client):
 
 
 @patch("futureself.web.routes.api.run_turn", new_callable=AsyncMock)
+async def test_chat_send_llm_error_returns_503(mock_run_turn, client):
+    mock_run_turn.side_effect = RuntimeError("anthropic 529 overloaded")
+    token = await _create_session(client)
+    resp = await client.post(
+        "/api/chat/send",
+        json={"message": "hi"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 503
+    assert "try again" in resp.json()["detail"].lower()
+
+
+@patch("futureself.web.routes.api.run_turn", new_callable=AsyncMock)
 async def test_chat_send_persists_updated_blueprint(mock_run_turn, client):
     updated_bp = UserBlueprint(inferred_facts=["User feels stuck"])
     mock_run_turn.return_value = _mock_result(blueprint=updated_bp)
