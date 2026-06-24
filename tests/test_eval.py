@@ -150,6 +150,18 @@ def test_check_expectations_must_include_any_missing_group_fails():
     assert groups[1].passed is False
 
 
+def test_default_narration_guard_flags_leak():
+    results = check_expectations("I'll think through this with you. Eat well.", None)
+    nn = [r for r in results if r.name == "no_narration"]
+    assert nn and nn[0].passed is False
+
+
+def test_default_narration_guard_passes_clean_reply():
+    results = check_expectations("Eat well and move daily, love.", None)
+    nn = [r for r in results if r.name == "no_narration"]
+    assert nn and nn[0].passed is True
+
+
 def test_evaluate_turn_populates_assertions_and_passed():
     turn_spec = {
         "user_message": "I'm in debt and exhausted.",

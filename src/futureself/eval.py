@@ -30,6 +30,37 @@ from typing import Any
 
 from futureself.schemas import OrchestratorResult
 
+# Narration / persona-break phrases that must never appear in any reply — the agent
+# speaks only as the Future Self and must open directly in character, never narrating
+# its process or tools. Applied to every scenario via the always-on `no_narration`
+# check. Opus 4.8 is prone to these preambles and phrasing varies, so this is a
+# best-effort net; the LLM-judge (futureself.judge) is the robust backstop for variants.
+_DEFAULT_FORBIDDEN = [
+    "load_skill",
+    "load the skill",
+    "load the relevant skill",
+    "i'll load",
+    "let me load",
+    "i want to load",
+    "i'll explore the relevant domain",
+    "explore the relevant domain",
+    "the skill content",
+    "i'll think through this",
+    "let me think about this",
+    "let me reason",
+    "i'll reason through",
+    "i'll look into",
+    # Structural markers — catch the "<meta preamble> before I answer" pattern
+    # regardless of the verb the model chooses.
+    "before i answer",
+    "before answering",
+    "before i respond",
+    "before i reply",
+    "as an ai",
+    "language model",
+    "system prompt",
+]
+
 
 @dataclasses.dataclass
 class AssertionResult:
@@ -79,6 +110,7 @@ def check_expectations(reply: str, expect: dict[str, Any] | None) -> list[Assert
     Returns:
         One :class:`AssertionResult` per check. ``non_empty`` is always present.
     """
+    low = reply.lower()
     results: list[AssertionResult] = [
         AssertionResult(
             "non_empty",
@@ -86,10 +118,15 @@ def check_expectations(reply: str, expect: dict[str, Any] | None) -> list[Assert
             f"{len(reply)} chars",
         )
     ]
+
+    # Always-on persona/narration guard (every scenario, no opt-in needed).
+    hit = next((p for p in _DEFAULT_FORBIDDEN if p in low), None)
+    results.append(
+        AssertionResult("no_narration", hit is None, f"leak phrase {hit!r}" if hit else "clean")
+    )
+
     if not expect:
         return results
-
-    low = reply.lower()
 
     if (min_length := expect.get("min_length")) is not None:
         results.append(

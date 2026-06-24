@@ -30,15 +30,6 @@ turns:
     expect:
       min_length: 150
       max_length: 4000
-      forbidden:
-        - "load_skill"
-        - "load the skill"
-        - "load the relevant skill"
-        - "i'll load"
-        - "let me load"
-        - "as an ai"
-        - "language model"
-        - "system prompt"
       must_include_any:
         - ["air", "pollut", "pm2.5", "pm 2.5", "asthma", "lung", "particulate"]
         - ["family", "close", "relationship", "community", "tie"]
