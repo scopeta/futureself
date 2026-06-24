@@ -37,7 +37,7 @@ flowchart TD
     subgraph Backend["FastAPI BFF — web/app.py"]
         Routes["routes/api.py<br/>/api/* endpoints"]
         SessionMod["session.py<br/>Bearer token to user"]
-        Orch["orchestrator.run_turn<br/>1 turn = 1 LLM call"]
+        Orch["orchestrator.run_turn<br/>1 turn = 1-2 LLM calls"]
         Builder["orchestrator.build_agent<br/>single shared builder"]
     end
 
@@ -108,8 +108,11 @@ sequenceDiagram
 
 Key invariants enforced here:
 
-- **One completion per turn.** `load_skill` calls are tool calls handled inside
-  the same agent run — they consume no extra completions.
+- **One agent, one synthesis pass per turn.** `load_skill` is a tool call, so the
+  model resumes after the tool result: a turn that loads skills costs **~2
+  completions** (one to request the skill(s), one to synthesize), one that loads
+  none costs 1. Still a single agent — no fan-out, no critique rounds. (Verified
+  in prod via App Insights: `chat` spans ≈ 2× `invoke_agent` spans.)
 - **Immutability.** `run_turn` returns a *new* Blueprint via `model_copy`; it
   never mutates the input.
 - **Graceful degradation.** A malformed/empty model reply yields an empty

@@ -18,7 +18,7 @@ When rebuilding or refactoring, resolve conflicts in this order:
 
 ## Non-Negotiable Architecture Rules
 - The **Future Self Synthesizer** is the only user-facing agent.
-- **One LLM completion per turn** — no sub-agent fan-out, no critique rounds, no multi-pass refinement.
+- **One agent, one synthesis pass per turn** — no sub-agent fan-out, no critique rounds, no multi-pass refinement. (Skill loading is a tool call: the model resumes after the tool result, so a turn that loads skills costs ~2 LLM completions — one to request the skill(s), one to synthesize — and a turn that loads none costs 1. Still a single agent and a single synthesis pass, never a multi-agent pipeline.)
 - Domain expertise is delivered exclusively via MAF skills (`SKILL.md` files) loaded on demand
   through the `load_skill` tool. No hardcoded domain prompts in the orchestrator.
 - **Blueprint mutations are orchestrator-only** and must use `model_copy` (never in-place mutation).

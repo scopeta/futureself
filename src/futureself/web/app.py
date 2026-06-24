@@ -52,6 +52,17 @@ def create_app() -> FastAPI:
 
     application.include_router(api_router, prefix="/api")
 
+    # Capture incoming HTTP requests as App Insights "requests" telemetry.
+    # configure_azure_monitor() (module import above) wires the exporter and the
+    # agent/dependency spans, but server-side FastAPI requests need explicit
+    # instrumentation — without it the request-driven portal blades (Performance,
+    # Application Map, end-to-end transactions) stay empty. Guarded by the
+    # connection string so local dev is untouched; the instrumentation package is
+    # provided transitively by azure-monitor-opentelemetry.
+    if _appinsights_conn:
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor  # noqa: PLC0415
+        FastAPIInstrumentor.instrument_app(application)
+
     # Serve the built React app in production (frontend/dist must exist)
     if _FRONTEND_DIST.exists():
         _assets = _FRONTEND_DIST / "assets"

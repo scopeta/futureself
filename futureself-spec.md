@@ -18,7 +18,7 @@ Domain expertise is delivered via six skills loaded on demand — not via parall
 - **Long-term:** The interaction model is designed for a lifelong relationship, not transactional queries.
 - **Persona-consistent synthesis** as the user's future self.
 - **Controlled blueprint updates** owned by orchestrator only.
-- **Minimal LLM calls:** 1 reasoning LLM call per turn plus tool calls for skill loading (no extra completions).
+- **Minimal LLM calls:** one synthesis pass per turn. Skill loading is a tool call, so the model resumes after the tool result — a turn that loads skills uses ~2 completions (one to request the skill(s), one to synthesize); a turn that loads none uses 1. No multi-agent fan-out or critique rounds.
 
 ---
 
@@ -50,7 +50,7 @@ flowchart TD
     Facts -.-> Blueprint[("Updated Blueprint")]
 ```
 
-**LLM calls per turn:** 1 completion + N `load_skill` tool calls (N = 0–3 relevant domains). Skill loading consumes no additional completions.
+**LLM calls per turn:** the model emits its `load_skill` tool calls in one completion (N = 0–3 domains, typically a single tool-call round), then synthesizes the reply in a second — so **~2 completions when skills load, 1 when none do**. Each tool-call round the model resumes from is an additional completion; the SkillsProvider *returning* a SKILL.md body is in-process and free, but the model consuming it is not. (Confirmed in production via App Insights: `chat` spans ≈ 2× `invoke_agent` spans.)
 
 ---
 
@@ -89,8 +89,8 @@ Single-turn flow (`run_turn`):
 2. **Run** the MAF ChatAgent with `SkillsProvider` .
    - SkillsProvider injects skill names + descriptions at session start.
    - LLM reads the turn context, decides which skills are relevant, calls `load_skill` for each.
-   - SkillsProvider returns the full SKILL.md body — no LLM call consumed.
-   - LLM synthesizes the Future Self reply in character.
+   - SkillsProvider returns the full SKILL.md body (in-process, no LLM call) — but the model must resume to use it.
+   - LLM synthesizes the Future Self reply in character (a second completion when skills were loaded).
 3. **Extract** new facts from the reply via `_extract_facts_simple` (regex, no LLM call).
 4. **Append** turn to conversation history and merge new facts into blueprint (immutable copy).
 5. **Return** `OrchestratorResult`.
@@ -331,7 +331,7 @@ def _mock_agent(reply: str) -> MagicMock:
 - `OrchestratorResult` simplified: removed `agents_consulted`, `initial_responses`, `refined_responses`, `conflict_detected`, `conflict_summary`, `AgentResponse`, `CritiqueContext`.
 - Observability: MAF built-in OTel → Application Insights via `azure-monitor-opentelemetry` (configured at startup, no custom span code).
 - Deployment: Azure Container Apps (Southeast Asia), FastAPI on port 8000, Docker image on `futureselfacr.azurecr.io`.
-- LLM calls: 7–11 → 1 per turn.
+- LLM calls: 7–11 → ~1–2 per turn (one synthesis pass; +1 completion when skills load via tool call).
 
 **Phase 6: The Data** — *Active*
 - User persistence (saving blueprint state across sessions).
