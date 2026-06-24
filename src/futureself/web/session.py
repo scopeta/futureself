@@ -7,8 +7,10 @@ that stores the full UserBlueprint as JSONB.
 from __future__ import annotations
 
 import secrets
+import uuid
 
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -83,6 +85,68 @@ async def save_blueprint(
     await db.execute(
         update(Blueprint)
         .where(Blueprint.user_id == session_row.user_id)
+        .values(data=blueprint.model_dump())
+    )
+    await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Identity resolution by internal user_id (used by both auth modes)
+#
+# The authorization invariant (spec §6.5): every user-data query is filtered by
+# a `user_id` resolved server-side — from a validated Entra token (oid → user_id)
+# or from the anonymous session token — never from client-supplied input.
+# ---------------------------------------------------------------------------
+
+
+async def get_user_id_from_token(
+    request: Request, db: AsyncSession
+) -> uuid.UUID | None:
+    """Anonymous mode: map the Bearer session token to its internal user_id."""
+    token = _token_from_request(request)
+    if not token:
+        return None
+    return await db.scalar(select(Session.user_id).where(Session.token == token))
+
+
+async def get_or_create_user_by_oid(db: AsyncSession, oid: str) -> uuid.UUID:
+    """Entra mode: resolve an Entra `oid` to its internal user_id, creating the
+    user (and a blank blueprint) on first login. The oid is the only trusted key."""
+    user_id = await db.scalar(select(User.id).where(User.oid == oid))
+    if user_id is not None:
+        return user_id
+
+    user = User(oid=oid)
+    db.add(user)
+    try:
+        await db.flush()  # assign user.id
+        db.add(Blueprint(user_id=user.id, data=UserBlueprint().model_dump()))
+        await db.commit()
+        return user.id
+    except IntegrityError:
+        # Concurrent first-login for the same oid — the other writer won.
+        await db.rollback()
+        existing = await db.scalar(select(User.id).where(User.oid == oid))
+        if existing is None:
+            raise
+        return existing
+
+
+async def get_blueprint_by_user_id(
+    db: AsyncSession, user_id: uuid.UUID
+) -> UserBlueprint | None:
+    """Load the blueprint for a resolved user_id."""
+    row = await db.scalar(select(Blueprint).where(Blueprint.user_id == user_id))
+    return UserBlueprint.model_validate(row.data) if row is not None else None
+
+
+async def save_blueprint_by_user_id(
+    user_id: uuid.UUID, blueprint: UserBlueprint, db: AsyncSession
+) -> None:
+    """Persist the blueprint for a resolved user_id."""
+    await db.execute(
+        update(Blueprint)
+        .where(Blueprint.user_id == user_id)
         .values(data=blueprint.model_dump())
     )
     await db.commit()

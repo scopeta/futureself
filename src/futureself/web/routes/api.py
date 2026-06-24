@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -18,11 +19,13 @@ from futureself.schemas import (
     Supplement,
     UserBlueprint,
 )
+from futureself.web.auth import AuthError, auth_enabled, bearer_token, validate_token
 from futureself.web.session import (
     create_session,
-    get_blueprint_from_bearer,
-    get_token_from_bearer,
-    save_blueprint,
+    get_blueprint_by_user_id,
+    get_or_create_user_by_oid,
+    get_user_id_from_token,
+    save_blueprint_by_user_id,
 )
 
 router = APIRouter()
@@ -36,15 +39,31 @@ DB = Annotated[AsyncSession, Depends(get_db)]
 # ---------------------------------------------------------------------------
 
 
-async def _require_blueprint(request: Request, db: DB) -> tuple[str, UserBlueprint]:
-    """Return (token, blueprint) or raise 401."""
-    token = await get_token_from_bearer(request, db)
-    if token is None:
-        raise HTTPException(status_code=401, detail="Invalid or missing session token")
-    blueprint = await get_blueprint_from_bearer(request, db)
+async def _require_identity(request: Request, db: DB) -> tuple[uuid.UUID, UserBlueprint]:
+    """Resolve the caller's internal user_id and load their blueprint, or raise 401.
+
+    Authorization invariant (spec §6.5): the user_id is derived **only** from the
+    server-validated credential — a validated Entra token's ``oid`` when auth is
+    enabled, otherwise the anonymous session token — never from request input.
+    """
+    if auth_enabled():
+        token = bearer_token(request.headers.get("Authorization"))
+        if not token:
+            raise HTTPException(status_code=401, detail="Missing bearer token")
+        try:
+            claims = validate_token(token)
+        except AuthError:
+            raise HTTPException(status_code=401, detail="Invalid or expired token") from None
+        user_id = await get_or_create_user_by_oid(db, claims["oid"])
+    else:
+        user_id = await get_user_id_from_token(request, db)
+        if user_id is None:
+            raise HTTPException(status_code=401, detail="Invalid or missing session token")
+
+    blueprint = await get_blueprint_by_user_id(db, user_id)
     if blueprint is None:
-        raise HTTPException(status_code=401, detail="Invalid or missing session token")
-    return token, blueprint
+        raise HTTPException(status_code=401, detail="No blueprint for this user")
+    return user_id, blueprint
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +96,7 @@ async def chat_send(body: ChatRequest, request: Request, db: DB) -> dict:
 
     Requires ``Authorization: Bearer <token>`` header.
     """
-    token, blueprint = await _require_blueprint(request, db)
+    user_id, blueprint = await _require_identity(request, db)
     try:
         result = await run_turn(blueprint, body.message)
     except Exception:
@@ -89,7 +108,7 @@ async def chat_send(body: ChatRequest, request: Request, db: DB) -> dict:
             status_code=503,
             detail="I'm having trouble gathering my thoughts right now — give me a moment and try again.",
         ) from None
-    await save_blueprint(token, result.updated_blueprint, db)
+    await save_blueprint_by_user_id(user_id, result.updated_blueprint, db)
 
     # Surface a fallback (a less-capable model served this turn) to the client so
     # the UI can tell the user — never serve a degraded answer silently. run_turn
@@ -113,7 +132,7 @@ async def chat_send(body: ChatRequest, request: Request, db: DB) -> dict:
 @router.get("/blueprint")
 async def blueprint_get(request: Request, db: DB) -> dict:
     """Return the current user blueprint as JSON."""
-    _, blueprint = await _require_blueprint(request, db)
+    _, blueprint = await _require_identity(request, db)
     return blueprint.model_dump()
 
 
@@ -125,27 +144,27 @@ async def blueprint_get(request: Request, db: DB) -> dict:
 @router.patch("/blueprint/bio")
 async def blueprint_patch_bio(body: BioData, request: Request, db: DB) -> dict:
     """Update bio fields (age, sex, height, weight, conditions, medications)."""
-    token, blueprint = await _require_blueprint(request, db)
+    user_id, blueprint = await _require_identity(request, db)
     updated = blueprint.model_copy(update={"bio": body})
-    await save_blueprint(token, updated, db)
+    await save_blueprint_by_user_id(user_id, updated, db)
     return updated.model_dump()
 
 
 @router.patch("/blueprint/context")
 async def blueprint_patch_context(body: ContextData, request: Request, db: DB) -> dict:
     """Update context fields (location, occupation, income, family)."""
-    token, blueprint = await _require_blueprint(request, db)
+    user_id, blueprint = await _require_identity(request, db)
     updated = blueprint.model_copy(update={"context": body})
-    await save_blueprint(token, updated, db)
+    await save_blueprint_by_user_id(user_id, updated, db)
     return updated.model_dump()
 
 
 @router.patch("/blueprint/psych")
 async def blueprint_patch_psych(body: PsychData, request: Request, db: DB) -> dict:
     """Update psychological fields (goals, fears, stress, flags)."""
-    token, blueprint = await _require_blueprint(request, db)
+    user_id, blueprint = await _require_identity(request, db)
     updated = blueprint.model_copy(update={"psych": body})
-    await save_blueprint(token, updated, db)
+    await save_blueprint_by_user_id(user_id, updated, db)
     return updated.model_dump()
 
 
@@ -154,25 +173,25 @@ async def blueprint_add_biomarker(
     body: BiomarkerEntry, request: Request, db: DB
 ) -> dict:
     """Add a biomarker entry to the history."""
-    token, blueprint = await _require_blueprint(request, db)
+    user_id, blueprint = await _require_identity(request, db)
     new_bio = blueprint.bio.model_copy(
         update={"biomarker_history": list(blueprint.bio.biomarker_history) + [body]}
     )
     updated = blueprint.model_copy(update={"bio": new_bio})
-    await save_blueprint(token, updated, db)
+    await save_blueprint_by_user_id(user_id, updated, db)
     return updated.model_dump()
 
 
 @router.post("/blueprint/supplements")
 async def blueprint_add_supplement(body: Supplement, request: Request, db: DB) -> dict:
     """Add or replace a supplement (matched by name)."""
-    token, blueprint = await _require_blueprint(request, db)
+    user_id, blueprint = await _require_identity(request, db)
     existing = [s for s in blueprint.bio.supplements if s.name != body.name]
     new_bio = blueprint.bio.model_copy(
         update={"supplements": existing + [body]}
     )
     updated = blueprint.model_copy(update={"bio": new_bio})
-    await save_blueprint(token, updated, db)
+    await save_blueprint_by_user_id(user_id, updated, db)
     return updated.model_dump()
 
 
@@ -181,12 +200,12 @@ async def blueprint_remove_supplement(
     name: str, request: Request, db: DB
 ) -> dict:
     """Remove a supplement by name."""
-    token, blueprint = await _require_blueprint(request, db)
+    user_id, blueprint = await _require_identity(request, db)
     new_bio = blueprint.bio.model_copy(
         update={"supplements": [s for s in blueprint.bio.supplements if s.name != name]}
     )
     updated = blueprint.model_copy(update={"bio": new_bio})
-    await save_blueprint(token, updated, db)
+    await save_blueprint_by_user_id(user_id, updated, db)
     return updated.model_dump()
 
 
@@ -200,5 +219,5 @@ async def blueprint_quality(request: Request, db: DB) -> dict:
     """Return a data quality report for the current blueprint."""
     from futureself.blueprint_quality import check_quality  # noqa: PLC0415
 
-    _, blueprint = await _require_blueprint(request, db)
+    _, blueprint = await _require_identity(request, db)
     return check_quality(blueprint).model_dump()
