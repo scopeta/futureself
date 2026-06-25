@@ -1,32 +1,28 @@
-"""Orchestrator — the Future Self Synthesizer.
+"""Orchestrator — builds the Future Self Synthesizer agent.
 
-Uses Microsoft Agent Framework (MAF) for all execution paths, providing
-SkillsProvider (lazy skill loading), OpenTelemetry tracing, and session
-management throughout.
+This module is the **single source of truth for agent construction**. The agent
+is run in exactly one place: the Foundry Hosted Agent (``main.py``, an Azure AI
+Responses host) built via :func:`build_agent`. The browser-facing BFF no longer
+runs the agent in-process — it calls the deployed hosted agent over HTTP (see
+``web/agent_client``) and owns the Postgres-backed Blueprint. Keeping one
+builder prevents drift in client selection, skills wiring, or prompt.
 
 Two client backends, selected from environment variables:
 
 1. **Anthropic direct** — ``ANTHROPIC_API_KEY`` set (and no Foundry endpoint).
    Uses ``agent_framework_anthropic.AnthropicClient``.
-   Runs via MAF Agent Services for cloud deployment.
 
 2. **Azure AI Foundry** — ``AZURE_FOUNDRY_ENDPOINT`` set.
    Uses ``agent_framework_foundry.FoundryChatClient`` — model-agnostic.
    Supports any model deployed to Foundry (GPT, Claude, Grok, etc.).
-   Enables MAF + Foundry Agent Service integration and Application Insights.
 
 Model is configured via ``FUTURESELF_MODEL`` (required; no default).
 Skills are lazy-loaded via MAF's ``SkillsProvider``.
 """
 from __future__ import annotations
 
-import asyncio
 import os
-import re
-import time
 from pathlib import Path
-
-from futureself.schemas import ConversationTurn, LLMCallTrace, OrchestratorResult, UserBlueprint
 
 _SKILLS_DIR = Path(__file__).parent / "skills"
 _ORCHESTRATOR_PROMPT_PATH = Path(__file__).parent.parent.parent / "prompts" / "orchestrator.md"
@@ -53,11 +49,6 @@ def _load_orchestrator_prompt() -> str:
 
 def build_agent(model: str | None = None) -> object:
     """Build and return the MAF Agent with SkillsProvider.
-
-    This is the single source of truth for agent construction, shared by both
-    entry points: the in-process BFF (via :func:`run_turn`) and the Foundry
-    Hosted Agent Responses host (``main.py``). Keeping one builder prevents the
-    two paths from drifting in client selection, skills wiring, or prompt.
 
     Client selection:
     - ``AZURE_FOUNDRY_ENDPOINT`` set → ``FoundryChatClient`` (model-agnostic,
@@ -109,176 +100,4 @@ def build_agent(model: str | None = None) -> object:
         instructions=_load_orchestrator_prompt(),
         name="FutureSelf",
         context_providers=[skills_provider],
-    )
-
-
-def _build_user_context(blueprint: UserBlueprint, user_message: str) -> str:
-    """Render the per-turn user context block."""
-    history_lines = [
-        f"{turn.role.upper()}: {turn.content}"
-        for turn in blueprint.conversation_history[-10:]
-    ]
-
-    facts_section = (
-        "\n\nKNOWN FACTS ABOUT USER:\n" + "\n".join(f"- {f}" for f in blueprint.inferred_facts)
-        if blueprint.inferred_facts
-        else ""
-    )
-    history_section = (
-        "\n\nCONVERSATION HISTORY:\n" + "\n".join(history_lines)
-        if history_lines
-        else ""
-    )
-
-    return (
-        f"USER PROFILE:\n{blueprint.model_dump_json(indent=2)}"
-        f"{facts_section}"
-        f"{history_section}"
-        f"\n\nUSER MESSAGE:\n{user_message}"
-    )
-
-
-def _extract_facts_simple(reply: str, blueprint: UserBlueprint) -> list[str]:
-    """Extract new facts from the reply without an LLM call.
-
-    Looks for common patterns: age mentions, location. Returns only facts not
-    already present in the blueprint.
-    """
-    existing = set(blueprint.inferred_facts)
-    candidates: list[str] = []
-
-    for m in re.finditer(r"\bI(?:'m| am) (\d{2,3})(?: years? old)?\b", reply, re.I):
-        candidates.append(f"User is {m.group(1)} years old")
-
-    for m in re.finditer(r"\b(?:I live|based|living) in ([A-Z][a-zA-Z\s,]+?)(?:\.|,|\n|$)", reply):
-        candidates.append(f"User lives in {m.group(1).strip()}")
-
-    return [f for f in candidates if f not in existing]
-
-
-def _is_transient(exc: BaseException) -> bool:
-    """True for provider errors worth retrying / falling back on.
-
-    Matched by HTTP status code (Anthropic/OpenAI SDK errors expose
-    ``status_code``) and by exception class name, so the orchestrator stays
-    provider-agnostic and needs no hard import of a specific SDK.
-    """
-    if getattr(exc, "status_code", None) in {408, 409, 425, 429, 500, 502, 503, 504, 529}:
-        return True
-    return type(exc).__name__ in {
-        "APIConnectionError",
-        "APITimeoutError",
-        "InternalServerError",
-        "RateLimitError",
-        "OverloadedError",
-        "ServiceUnavailableError",
-    }
-
-
-async def _run_agent_once(agent: object, user_ctx: str) -> object:
-    """Run one agent turn (sync session create + async run)."""
-    session = agent.create_session()  # sync — not async
-    return await agent.run(user_ctx, session=session)
-
-
-async def _run_with_resilience(
-    user_ctx: str, model: str, injected_agent: object | None
-) -> tuple[object, str]:
-    """Run the agent, retrying transient errors then falling back to a 2nd model.
-
-    Returns ``(result, model_that_served)``. Re-raises the last error if every
-    attempt fails. A non-transient error (e.g. a bug, a 400) is raised
-    immediately — no retry, no fallback. When ``injected_agent`` is provided
-    (tests), it is used directly and the fallback is skipped.
-
-    Env knobs:
-      ``FUTURESELF_LLM_RETRIES``    extra primary retries on transient errors (default 1)
-      ``FUTURESELF_LLM_BACKOFF``    base backoff seconds, exponential (default 1.0)
-      ``FUTURESELF_FALLBACK_MODEL`` second model tried on sustained transient
-                                    failure (default ``claude-sonnet-4-6``; set
-                                    empty to disable). The Anthropic SDK already
-                                    retries 2× internally per attempt.
-    """
-    retries = int(os.getenv("FUTURESELF_LLM_RETRIES", "1"))
-    backoff = float(os.getenv("FUTURESELF_LLM_BACKOFF", "1.0"))
-    agent = injected_agent if injected_agent is not None else build_agent(model)
-
-    last_exc: BaseException | None = None
-    for attempt in range(retries + 1):
-        try:
-            return await _run_agent_once(agent, user_ctx), model
-        except Exception as exc:  # noqa: BLE001 — classify, then retry / fall back / raise
-            last_exc = exc
-            if not _is_transient(exc) or attempt == retries:
-                break
-            await asyncio.sleep(backoff * (2**attempt))
-
-    fallback = os.getenv("FUTURESELF_FALLBACK_MODEL", "claude-sonnet-4-6").strip()
-    if (
-        injected_agent is None
-        and fallback
-        and fallback != model
-        and last_exc is not None
-        and _is_transient(last_exc)
-    ):
-        return await _run_agent_once(build_agent(fallback), user_ctx), fallback
-
-    assert last_exc is not None  # loop always sets it before breaking
-    raise last_exc
-
-
-async def run_turn(
-    user_blueprint: UserBlueprint,
-    user_message: str,
-    *,
-    _agent: object | None = None,
-    _model: str | None = None,
-) -> OrchestratorResult:
-    """Run one turn of the Future Self agent via MAF.
-
-    Args:
-        user_blueprint: Current user profile (treated as immutable input).
-        user_message: The user's raw message.
-        _agent: Injected MAF Agent instance (testing — skips env-var lookup).
-        _model: Injected model name (testing — skips ``FUTURESELF_MODEL`` lookup).
-
-    Returns:
-        OrchestratorResult with user_facing_reply, updated_blueprint, llm_traces.
-    """
-    model = _model if _model is not None else _resolve_model()
-
-    user_ctx = _build_user_context(user_blueprint, user_message)
-
-    t0 = time.monotonic()
-    result, used_model = await _run_with_resilience(user_ctx, model, _agent)
-    latency_ms = (time.monotonic() - t0) * 1000
-
-    user_reply: str = result.text or ""
-
-    new_facts = _extract_facts_simple(user_reply, user_blueprint)
-    existing = set(user_blueprint.inferred_facts)
-
-    updated_blueprint = user_blueprint.model_copy(
-        update={
-            "inferred_facts": list(user_blueprint.inferred_facts)
-            + [f for f in new_facts if f not in existing],
-            "conversation_history": list(user_blueprint.conversation_history)
-            + [
-                ConversationTurn(role="user", content=user_message),
-                ConversationTurn(role="assistant", content=user_reply),
-            ],
-        }
-    )
-
-    trace = LLMCallTrace(
-        task="orchestrator.run_turn",
-        model_requested=model,
-        model_actual=used_model if used_model != model else None,
-        latency_ms=latency_ms,
-    )
-
-    return OrchestratorResult(
-        user_facing_reply=user_reply,
-        updated_blueprint=updated_blueprint,
-        llm_traces=[trace],
     )

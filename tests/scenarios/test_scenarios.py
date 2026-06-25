@@ -9,7 +9,9 @@ against each ``scenarios/*.yaml`` and apply two layers:
   score below ``JUDGE_FLOOR`` (default 3/5) fails to catch egregious regressions.
 
 Run with:  uv run pytest tests/scenarios/ -m live -v
-Requires:  ANTHROPIC_API_KEY (Anthropic direct) and FUTURESELF_MODEL.
+Requires:  FOUNDRY_AGENT_ENDPOINT + Azure auth (az login / managed identity with
+           the Foundry User role) to reach the deployed hosted agent, and
+           ANTHROPIC_API_KEY for the LLM-as-judge.
 Optional:  JUDGE_MODEL (default claude-opus-4-8), JUDGE_FLOOR (default 3).
 """
 from __future__ import annotations
@@ -25,8 +27,8 @@ load_dotenv()
 
 from futureself import judge  # noqa: E402
 from futureself.eval import check_expectations  # noqa: E402
-from futureself.orchestrator import run_turn  # noqa: E402
 from futureself.schemas import UserBlueprint  # noqa: E402
+from futureself.web.agent_client import apply_turn, synthesize  # noqa: E402
 
 SCENARIO_DIR = Path(__file__).parent.parent.parent / "scenarios"
 SCENARIO_FILES = sorted(SCENARIO_DIR.glob("*.yaml"))
@@ -47,8 +49,7 @@ async def test_scenario(scenario_path: Path) -> None:
 
     for i, turn in enumerate(scenario.get("turns", []), start=1):
         user_msg = turn["user_message"].strip()
-        result = await run_turn(blueprint, user_msg)
-        reply = result.user_facing_reply
+        reply = await synthesize(blueprint, user_msg)
 
         # --- Hard gate: deterministic assertions ---
         assertions = check_expectations(reply, turn.get("expect"))
@@ -78,4 +79,4 @@ async def test_scenario(scenario_path: Path) -> None:
                 f"{verdict.overall_score} < floor {_JUDGE_FLOOR}: {verdict.rationale}"
             )
 
-        blueprint = result.updated_blueprint
+        blueprint = apply_turn(blueprint, user_msg, reply)

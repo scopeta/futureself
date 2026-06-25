@@ -83,21 +83,27 @@ flowchart TD
 
 ## 4. Runtime Orchestration Flow
 
-Single-turn flow (`run_turn`):
+The turn is split across two processes (spec §11): the **BFF** assembles context
+and persists state; the **hosted agent** runs the LLM + skills. The BFF side
+lives in `web/agent_client.py`:
 
-1. **Build** user context from `UserBlueprint` + `user_message` (conversation history, inferred facts, profile).
-2. **Run** the MAF ChatAgent with `SkillsProvider` .
+1. **Build** the context block from `UserBlueprint` + `user_message` (profile,
+   inferred facts, last 10 conversation turns) — `build_user_context`.
+2. **Synthesize** — `synthesize` POSTs the context to the hosted agent's
+   stateless Responses endpoint (`store=False`). Inside the agent (built by the
+   shared `build_agent`):
    - SkillsProvider injects skill names + descriptions at session start.
    - LLM reads the turn context, decides which skills are relevant, calls `load_skill` for each.
    - SkillsProvider returns the full SKILL.md body (in-process, no LLM call) — but the model must resume to use it.
    - LLM synthesizes the Future Self reply in character (a second completion when skills were loaded).
-3. **Extract** new facts from the reply via `_extract_facts_simple` (regex, no LLM call).
-4. **Append** turn to conversation history and merge new facts into blueprint (immutable copy).
-5. **Return** `OrchestratorResult`.
+3. **Extract** new facts from the reply via `agent_client.extract_facts` (regex, no LLM call).
+4. **Append** the turn to conversation history and merge new facts into the
+   Blueprint (immutable `model_copy`) — `agent_client.apply_turn` — then persist.
 
 Notes:
 - Fact extraction is synchronous and regex-based — no additional LLM cost.
-- `_agent` parameter in `run_turn` allows mock injection for tests without Azure credentials.
+- Unit tests mock `synthesize` (no Azure credentials needed); the helpers are
+  pure and tested directly.
 
 ---
 
@@ -208,7 +214,7 @@ client = FoundryChatClient(project_endpoint=endpoint, model=model, credential=De
 agent = Agent(client, instructions=prompt, name="FutureSelf", context_providers=[skills_provider])
 ```
 
-Session and run (in `run_turn`):
+Session and run (inside the hosted agent's response handler, `main.py`):
 ```python
 session = agent.create_session()           # sync — not async
 result = await agent.run(user_ctx, session=session)
@@ -259,13 +265,15 @@ Skill prompt body structure: **Role → Domain Expertise → Prioritization Fram
 
 | Failure | Handling |
 |---------|----------|
-| Empty agent reply | Return `OrchestratorResult` with `user_facing_reply=""` |
+| Empty agent reply | `synthesize` returns `""`; the turn still persists |
 | Fact extraction error | Return original blueprint unchanged |
-| Transient LLM error (429 / 5xx / 529 overload / timeout) | `run_turn` retries with exponential backoff, then falls back to `FUTURESELF_FALLBACK_MODEL` (default `claude-sonnet-4-6`); the serving model is recorded in `LLMCallTrace.model_actual`. If all attempts fail the BFF returns a retryable **503** (never a raw 500). When a fallback model served, the chat response carries `degraded: true` + a notice — degradation is never silent. |
-| Non-transient error (400, bug) | Raised immediately — no retry, no fallback |
-| No LLM provider configured | `build_agent` raises at call time, not at import |
+| Hosted agent error (transient overload/timeout, or endpoint unreachable) | The OpenAI client retries (its built-in backoff); if it still fails, `chat_send` returns a retryable **503** (never a raw 500). The Anthropic SDK *inside* the hosted agent also retries the underlying model call. There is no longer a BFF-side model-fallback/`degraded` path — the cutover simplified it away. |
+| No LLM provider configured (agent container) | `build_agent` raises at call time, not at import |
+| `FOUNDRY_AGENT_ENDPOINT` unset (BFF) | `synthesize` raises → `chat_send` returns 503 |
 
-`agent_framework` imports are lazy (inside `build_agent`) so the module loads in local dev without the cloud SDK installed.
+`agent_framework` imports are lazy (inside `build_agent`); the cloud SDKs the BFF
+needs (`openai`, `azure-identity`) are imported lazily inside `agent_client._client`,
+so unrelated code paths load without them.
 
 ### Operational hardening (deployed)
 
@@ -280,26 +288,30 @@ Skill prompt body structure: **Role → Domain Expertise → Prioritization Fram
 
 ## 9. Testing Requirements
 
-### 9.1 Unit/Integration (mocked MAF agent)
+### 9.1 Unit/Integration (mocked hosted agent)
 
-Must cover:
-- `run_turn` returns `OrchestratorResult` with correct fields.
-- Blueprint immutability across turn.
+Must cover (`tests/web/test_agent_client.py`, `tests/web/test_routes.py`):
+- `chat_send` returns `{"reply": ...}` and persists the turn (history + facts).
+- Hosted agent error → BFF returns 503 (never a raw 500).
+- Blueprint immutability across `apply_turn`.
 - Conversation history appended with correct `ConversationTurn` objects.
-- LLM trace recorded with correct task, model, and non-negative latency.
-- `_extract_facts_simple`: age extraction, deduplication, empty reply.
-- `_build_user_context`: includes user message, includes inferred facts.
-- Empty model reply handled gracefully.
+- `extract_facts`: age extraction, deduplication, empty reply.
+- `build_user_context`: includes user message, facts, and history.
+- `synthesize`: calls the Responses endpoint with `store=False`, handles empty
+  `output_text` gracefully.
 
-Mock pattern:
+Mock pattern — the hosted agent is the only mocked component:
 ```python
-def _mock_agent(reply: str) -> MagicMock:
-    result = MagicMock()
-    result.text = reply                                        # AgentResponse.text
-    agent = MagicMock()
-    agent.create_session = MagicMock(return_value=MagicMock())  # sync, not AsyncMock
-    agent.run = AsyncMock(return_value=result)
-    return agent
+# Route test: patch the BFF's synthesize with an AsyncMock returning the reply.
+@patch("futureself.web.routes.api.synthesize", new_callable=AsyncMock)
+async def test_chat_send_returns_reply(mock_synthesize, client):
+    mock_synthesize.return_value = "Hello from the future."
+    ...
+
+# Client test: stub the cached OpenAI client.
+fake = SimpleNamespace(responses=SimpleNamespace(create=AsyncMock(
+    return_value=SimpleNamespace(output_text="..."))))
+monkeypatch.setattr(agent_client, "_client", lambda: fake)
 ```
 
 ### 9.2 Live Scenario Tests (evaluator-as-reviewer)
@@ -308,7 +320,7 @@ def _mock_agent(reply: str) -> MagicMock:
 - Scenario files in `scenarios/*.yaml`. Each defines `name`, `user_blueprint`,
   `turns` (with `user_message` and an optional `expect` block), and an optional
   scenario-level `rubric` (extra judge criteria).
-- Multi-turn scenarios carry `updated_blueprint` forward between turns.
+- Multi-turn scenarios carry the Blueprint forward between turns via `agent_client.apply_turn`.
 - **Two evaluation tiers (run against real Claude):**
   - *Deterministic assertions* (`eval.check_expectations` vs the `expect` block):
     length bounds, `must_include_any` topical keywords, `forbidden` phrases
@@ -407,24 +419,40 @@ Schema impact (Section 5.1): `UserBlueprint` is conceptually per-user; the persi
 
 ---
 
-## 11. Foundry Hosted Agents Migration (hosted agent deployed; BFF cutover pending)
+## 11. Foundry Hosted Agents Migration (BFF cutover complete)
 
-### 11.0 Active topology (Anthropic direct)
+### 11.0 Active topology (BFF → Foundry hosted agent)
 
-The active deployment runs **Anthropic direct**, where the React BFF
-(`web/app.py` → `web/routes/api.py::chat_send`) is the canonical orchestration
-path: it calls `orchestrator.run_turn` in-process and owns the Postgres-backed
-Blueprint, conversation history, and per-turn fact extraction. The BFF does
-**not** proxy the Responses host in this topology — doing so would lose the
-Blueprint/profile context (the host runs stateless against thread memory only)
-and, without Foundry, would fall back to non-durable in-memory thread storage.
+The agent runs in **exactly one place**: the Foundry Hosted Agent container
+(`main.py`, an Azure AI Responses host) built via `orchestrator.build_agent`.
+The React BFF (`web/app.py` → `web/routes/api.py::chat_send`) no longer
+orchestrates in-process — it calls the deployed agent over HTTP through
+`web/agent_client.py` (`synthesize`) and remains the **system of record** for
+the Postgres-backed Blueprint (profile, facts, **and** conversation history).
 
-The Responses host (`main.py`) is the **optional Foundry on-ramp**. Both entry
-points construct the identical agent through the single shared builder
-`orchestrator.build_agent(model)` — there is no second builder to drift. The
-BFF cutover described in §11.1 below is therefore **gated on Foundry Agent
-Service** managing thread memory (`FOUNDRY_PROJECT_ENDPOINT` set); until then,
-the in-process BFF path stands.
+Per-turn flow: `chat_send` resolves the user (auth invariant §6.5), calls
+`synthesize(blueprint, message)` — which renders the full context block
+(profile + known facts + recent history + message) and POSTs it to the agent's
+OpenAI-compatible Responses endpoint — then `apply_turn` appends the exchange
+and merges newly extracted facts, and the Blueprint is saved. There is no
+in-process `run_turn` and no model-fallback layer in the BFF anymore (the LLM
+call, retries, and skill loading all live inside the hosted agent). This is a
+**single-path** cutover: no feature flag.
+
+**Why the BFF still owns conversation history (not Foundry).** The Foundry agent
+Responses endpoint is **stateless per external caller** — end-user conversation
+isolation isn't offered yet (a caller who knew another conversation id could read
+it), so the documented contract is "store conversation history in your client and
+send it as context." The BFF therefore sends `store=False` and the full context
+each turn, keeping Postgres as the durable, per-user-isolated store.
+
+**Auth.** The BFF authenticates to the agent with Microsoft Entra (Azure RBAC):
+`DefaultAzureCredential` (managed identity in prod, `az login` locally), scope
+`https://ai.azure.com/.default`. The BFF identity needs the **Foundry User** role
+on the agent resource. No API-key path exists for the endpoint.
+
+**Config.** `FOUNDRY_AGENT_ENDPOINT` (the Responses base URL) is required on the
+BFF; `FOUNDRY_AGENT_API_VERSION` defaults to `v1`.
 
 ### 11.0.1 Hosted agent deployment — LIVE (2026-06-25)
 
@@ -447,8 +475,8 @@ project (`fsrfoundry-res` / `project-default`), reusing it — no new project:
   active); `azd ai agent invoke` confirmed a real in-character reply (`futureself:5`).
 - **Endpoint:** `…/projects/project-default/agents/futureself/endpoint/protocols/openai/responses?api-version=v1`.
 
-The BFF has **not** yet cut over — it still calls `run_turn` in-process. The
-cutover (§11.1) and auth activation (§11.4) remain.
+The BFF has now **cut over** (see §11.0): it proxies this hosted agent and no
+longer runs the agent in-process. Auth activation (§11.4) remains.
 
 The Hosted Agents on-ramp uses the Azure AI Responses protocol via
 `azure-ai-agentserver-responses` (protocol host) + `azure-ai-agentserver-core`
@@ -468,20 +496,37 @@ on `0.0.0.0:8088`. Deployment shape is declared in `agent.yaml`
 (`azd ai agent` manifest); replacing the current Container Apps deploy
 template is tracked separately.
 
-When the BFF (`web/routes/api.py::chat_send`) cuts over to proxying the
-Hosted Agent instead of calling `run_turn` in-process, two persistence
-boundaries shift:
+### 11.1 Conversation history stays in Postgres (stateless endpoint)
 
-### 11.1 Conversation history → Foundry-managed thread memory
-- **Today (in-process):** `conversation_history` is a first-class field on `UserBlueprint`, persisted in Postgres alongside `bio`/`psych`/`context`/`inferred_facts`.
-- **After migration:** Foundry Agent Service maintains thread memory automatically per session. `conversation_history` on the Blueprint becomes a **read-through projection** of the active Foundry thread (or empty if no thread is bound) — not the system of record. The orchestrator no longer appends turns to it manually; Foundry does.
-- **What stays in Postgres:** `bio`, `psych`, `context`, `inferred_facts`. These are domain state, not transcript memory, and remain sovereign to FutureSelf so they survive Foundry session boundaries and channel switches (web ↔ WhatsApp).
-- **`inferred_facts` extraction unchanged:** still runs synchronously per turn via `_extract_facts_simple`, still merged into the Postgres-backed Blueprint via `model_copy`.
-- **Channel binding:** each user gets one Foundry thread per active channel; thread IDs are stored on the user record in Postgres. Switching channels (web → WhatsApp) starts a fresh thread but keeps the same Blueprint.
+The original migration plan assumed Foundry would manage thread memory and
+`conversation_history` would become a read-through projection of a Foundry
+thread. **That is not how it shipped:** the agent Responses endpoint is
+stateless per external caller (§11.0), so the BFF remains the conversation
+store. Concretely:
+
+- **`conversation_history`** stays a first-class, durable field on `UserBlueprint`
+  in Postgres, appended each turn by `agent_client.apply_turn` (via `model_copy`).
+  It is sent to the agent as part of the per-turn context (last 10 turns).
+- **`bio`, `psych`, `context`, `inferred_facts`** likewise stay sovereign in
+  Postgres — domain state that survives across requests and channel switches
+  (web ↔ WhatsApp).
+- **`inferred_facts` extraction unchanged** in behaviour: `agent_client.extract_facts`
+  (moved out of the orchestrator) runs per turn and merges via `model_copy`.
+- **Channel binding:** a single Blueprint per user backs all channels; no Foundry
+  thread id is needed because Foundry holds no per-user conversation state.
+
+If/when Foundry offers per-end-user conversation isolation, history *could* move
+to server-managed threads (`store=True` + `previous_response_id`), but there is
+no need to until then.
 
 ### 11.2 Test impact
-- Mock pattern in Section 9.1 unchanged for unit tests (Foundry thread is opaque behind `agent.run`).
-- Multi-turn scenario tests need to either bind a real Foundry thread (live tier) or stub the thread interface (unit tier).
+- Unit tests mock `web.agent_client.synthesize` (an `AsyncMock` returning the
+  reply string) — see `tests/web/test_routes.py`. The turn-assembly helpers
+  (`build_user_context`, `extract_facts`, `apply_turn`, `synthesize`) are tested
+  directly in `tests/web/test_agent_client.py`.
+- Live multi-turn scenarios (`tests/scenarios/`) call the real `synthesize`
+  against the deployed agent (needs `FOUNDRY_AGENT_ENDPOINT` + Azure auth) and
+  thread state locally via `apply_turn`.
 
 ### 11.3 What does *not* change
 - Single-agent rule (Section 2).
@@ -498,9 +543,11 @@ topology, so it happens once (see Phase 6.5 sequencing):
   Entra app registration, and build the frontend with the (public) client/tenant IDs.
 - **Backend:** set `ENTRA_TENANT_ID` + `ENTRA_CLIENT_ID` on the BFF to flip the
   already-shipped JWT-validation path from anonymous to required (§6.5).
-- **Per-user threads:** bind each user's Foundry thread ID to their `oid` on the
-  `users` row (§11.1), reusing the `oid → user_id` resolution from §6.5. The
-  authorization invariant extends to the thread ID (never client-supplied).
+- **No per-user thread binding needed:** conversation state lives in the
+  Postgres Blueprint keyed by the server-resolved `user_id` (§11.1), so the
+  `oid → user_id` resolution from §6.5 already isolates each user's history.
+  Should Foundry-managed threads ever be adopted, the thread id would bind to
+  the `users` row and the authorization invariant would extend to it.
 
 ---
 
@@ -508,11 +555,13 @@ topology, so it happens once (see Phase 6.5 sequencing):
 
 A rebuild from scratch is valid only if all are true:
 
-1. **`run_turn` implements the flow in Section 4.**
+1. **The turn flow in Section 4 holds:** the BFF (`agent_client.synthesize` +
+   `apply_turn`) calls the hosted agent and persists; the agent is built by the
+   single `build_agent`.
 2. **All domain expertise is delivered via SKILL.md files following Section 7 conventions.**
-3. **`_agent` parameter supports mock injection for tests.**
-4. **Blueprint immutability is enforced: orchestrator uses `model_copy`, never mutates.**
-5. **LLM call trace is recorded for every `run_turn` call.**
+3. **`web.agent_client.synthesize` is mockable so route tests need no Azure credentials.**
+4. **Blueprint immutability is enforced: `apply_turn` uses `model_copy`, never mutates.**
+5. **The BFF never returns a raw 500 — a hosted-agent failure degrades to a 503.**
 6. **Empty model replies do not crash a turn.**
 7. **Tests from Section 9 are present and passing.**
 8. **Persistence boundaries follow Section 11.1: Blueprint domain fields in Postgres, `conversation_history` deferred to Foundry-managed thread memory once Hosted Agents migration is active.**

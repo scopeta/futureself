@@ -4,6 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     "anthropic>=0.39",
+    "openai>=2.0",
     "agent-framework>=1.0.1",
     "agent-framework-anthropic>=1.0.0b260409",
     "agent-framework-foundry>=1.0.1",

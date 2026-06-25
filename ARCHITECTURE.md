@@ -37,37 +37,37 @@ flowchart TD
     subgraph Backend["FastAPI BFF — web/app.py"]
         Routes["routes/api.py<br/>/api/* endpoints"]
         SessionMod["session.py<br/>Bearer token to user"]
-        Orch["orchestrator.run_turn<br/>1 turn = 1-2 LLM calls"]
-        Builder["orchestrator.build_agent<br/>single shared builder"]
+        Client["web/agent_client.py<br/>synthesize + apply_turn"]
     end
 
-    subgraph MAF["Microsoft Agent Framework"]
-        Agent["Agent + SkillsProvider"]
+    subgraph FoundryAgent["Foundry Hosted Agent — main.py"]
+        Host["Responses host<br/>Azure AI, stateless per caller"]
+        Builder["orchestrator.build_agent<br/>single agent builder"]
+        Agent["MAF Agent + SkillsProvider"]
         Skills["skills/*/SKILL.md<br/>6 domains, load on demand"]
     end
 
-    Claude["Claude — Anthropic direct<br/>AnthropicClient"]
+    Claude["Claude — AnthropicClient<br/>1 turn = 1-2 completions"]
     DB[("PostgreSQL<br/>users / blueprints / sessions")]
 
     UI -->|"Bearer token + JSON"| Routes
     Routes --> SessionMod
     SessionMod <-->|"load / save Blueprint"| DB
-    Routes --> Orch
-    Orch --> Builder --> Agent
+    Routes --> Client
+    Client -->|"HTTPS Responses<br/>Entra auth, full context"| Host
+    Host --> Builder --> Agent
     Agent -->|"load_skill"| Skills
     Agent -->|"chat completion"| Claude
-    Claude -->|"reply"| Agent --> Orch
-    Orch -->|"reply"| Routes --> UI
-
-    Foundry["main.py<br/>Responses host — optional Foundry on-ramp"]
-    Foundry -.->|"same builder"| Builder
+    Claude -->|"reply"| Agent --> Host
+    Host -->|"reply"| Client --> Routes --> UI
 ```
 
-**Two entry points, one agent.** The browser-facing path (BFF → `run_turn`) is
-canonical for the active **Anthropic-direct** deployment. `main.py` is an
-optional Azure AI Foundry Hosted-Agent on-ramp. Both build the *identical*
-agent through `orchestrator.build_agent`, so they cannot drift. The BFF only
-proxies the Foundry host once Foundry Agent Service manages thread memory — see
+**One agent, called over HTTP.** The agent runs in exactly one place — the
+Foundry Hosted Agent (`main.py`), built by the single `orchestrator.build_agent`.
+The BFF no longer runs it in-process: `web/agent_client.py` sends the full
+per-turn context to the agent's **stateless** Responses endpoint (Microsoft
+Entra auth) and keeps Postgres as the system of record for the Blueprint —
+including conversation history. See
 [`futureself-spec.md` §11](./futureself-spec.md).
 
 ---
@@ -82,25 +82,23 @@ sequenceDiagram
     participant API as routes/api.py
     participant S as session.py
     participant DB as PostgreSQL
-    participant O as orchestrator.run_turn
-    participant A as MAF Agent
+    participant CL as agent_client
+    participant H as Hosted Agent (main.py)
     participant C as Claude
 
     U->>API: POST /api/chat/send (Bearer token, message)
-    API->>S: resolve token to Blueprint
+    API->>S: resolve token to user_id + Blueprint
     S->>DB: SELECT blueprint by session token
     DB-->>S: UserBlueprint (JSON)
     S-->>API: UserBlueprint
-    API->>O: run_turn(blueprint, message)
-    O->>O: build per-turn context (profile + facts + history + message)
-    O->>A: agent.run(context)
-    A->>A: read skills manifest, decide which to load
-    A->>A: load_skill(...) returns SKILL.md body (no extra LLM call)
-    A->>C: single chat completion
-    C-->>A: Future Self reply
-    A-->>O: AgentResponse.text
-    O->>O: extract new facts (regex, no LLM) + model_copy Blueprint
-    O-->>API: OrchestratorResult (reply, updated Blueprint, trace)
+    API->>CL: synthesize(blueprint, message)
+    CL->>CL: build per-turn context (profile + facts + history + message)
+    CL->>H: POST /responses (Entra auth, store=false)
+    H->>C: agent.run → load_skill(s) + single synthesis completion
+    C-->>H: Future Self reply
+    H-->>CL: response.output_text
+    CL-->>API: reply
+    API->>API: apply_turn → extract facts (regex) + model_copy Blueprint
     API->>S: save updated Blueprint
     S->>DB: UPDATE blueprints.data
     API-->>U: reply JSON
@@ -113,10 +111,13 @@ Key invariants enforced here:
   completions** (one to request the skill(s), one to synthesize), one that loads
   none costs 1. Still a single agent — no fan-out, no critique rounds. (Verified
   in prod via App Insights: `chat` spans ≈ 2× `invoke_agent` spans.)
-- **Immutability.** `run_turn` returns a *new* Blueprint via `model_copy`; it
+- **Immutability.** `apply_turn` returns a *new* Blueprint via `model_copy`; it
   never mutates the input.
-- **Graceful degradation.** A malformed/empty model reply yields an empty
-  `user_facing_reply` rather than crashing the turn.
+- **Graceful degradation.** An empty model reply yields an empty `reply` rather
+  than crashing; a hosted-agent failure returns a retryable **503**, never a raw 500.
+- **Stateless agent, durable Postgres.** The agent endpoint stores nothing per
+  caller (`store=false`); the BFF sends the full context each turn and owns the
+  conversation history.
 
 ---
 
@@ -233,7 +234,8 @@ flowchart TD
 | `src/futureself/web/app.py` | FastAPI factory: CORS, router mount, OTel, serves built SPA. |
 | `src/futureself/web/routes/api.py` | JSON REST endpoints (session, chat, blueprint, quality). |
 | `src/futureself/web/session.py` | Bearer-token sessions backed by Postgres. |
-| `src/futureself/orchestrator.py` | `run_turn`, `build_agent`, context build, fact extraction. |
+| `src/futureself/orchestrator.py` | `build_agent` — the single agent builder (run by the hosted agent). |
+| `src/futureself/web/agent_client.py` | BFF→hosted-agent client: `synthesize`, context build, fact extraction, `apply_turn`. |
 | `src/futureself/schemas.py` | Pydantic data contracts (`UserBlueprint`, results, traces). |
 | `src/futureself/skills/<name>/SKILL.md` | The six domain skills. |
 | `src/futureself/blueprint_quality.py` | Rule-based Blueprint data-quality report (no LLM). |
@@ -241,8 +243,8 @@ flowchart TD
 | `src/futureself/judge.py` | LLM-as-judge rubric scorer (offline quality gate). |
 | `src/futureself/db/` | SQLAlchemy models + async engine. |
 | `alembic/` | Database migrations. |
-| `main.py` | Foundry Hosted-Agent Responses host (optional on-ramp). |
-| `simulate.py` | CLI harness to run `scenarios/*.yaml` through `run_turn`. |
+| `main.py` | Foundry Hosted-Agent Responses host — the single agent runtime. |
+| `simulate.py` | CLI harness to run `scenarios/*.yaml` through the hosted agent. |
 | `scenarios/` | Multi-turn test scenarios. |
 | `prompts/orchestrator.md` | The Future Self system prompt. |
 | `infra/azure/`, `.github/workflows/`, `Dockerfile` | Deployment & CI/CD. |
@@ -269,19 +271,25 @@ All under `/api`; chat and blueprint routes require `Authorization: Bearer <toke
 
 ## 9. Running it locally
 
-1. Copy `.env.example` → `.env` and set `ANTHROPIC_API_KEY`, `FUTURESELF_MODEL`,
-   and `DATABASE_URL` (Postgres). See `.env.example` for the full list.
-2. Install deps with `uv sync --prerelease=allow` (the Foundry hosting SDK is
+The agent and the BFF are two processes (spec §11). Copy `.env.example` → `.env`
+first; it documents which vars belong to which process.
+
+1. **Agent:** set `ANTHROPIC_API_KEY` + `FUTURESELF_MODEL`, then run the hosted
+   agent locally: `python main.py` (Responses host on `:8088`).
+2. **BFF:** point `FOUNDRY_AGENT_ENDPOINT` at the agent (local `:8088` or the
+   deployed endpoint), set `DATABASE_URL` (Postgres), and ensure Azure auth
+   (`az login`) when targeting the deployed agent.
+3. Install deps with `uv sync --prerelease=allow` (the Foundry hosting SDK is
    beta — see `AGENTS.md` → Hosting SDK).
-3. Apply migrations (`alembic upgrade head`) against your Postgres.
-4. Backend: `uvicorn futureself.web.app:app --reload`.
-5. Frontend: `cd frontend && bun install && bun run dev` (set `VITE_API_URL` to
+4. Apply migrations (`alembic upgrade head`) against your Postgres.
+5. Backend: `uvicorn futureself.web.app:app --reload`.
+6. Frontend: `cd frontend && bun install && bun run dev` (set `VITE_API_URL` to
    the backend origin).
 
 **Fast paths that need no DB or browser:**
 
-- One turn end-to-end: drive `orchestrator.run_turn` directly.
-- Scenario harness: `python simulate.py --scenario <name>` (see `scenarios/`).
+- Scenario harness: `python simulate.py --scenario <name>` (drives the hosted
+  agent via `agent_client.synthesize`; needs `FOUNDRY_AGENT_ENDPOINT` + Azure auth).
 - Tests: `pytest` (live LLM tests are excluded by default).
 
 ---
@@ -312,7 +320,7 @@ flowchart LR
   `DEFAULT_RUBRIC` plus any scenario-specific `rubric:` criteria. Non-deterministic
   and costs tokens, so it's **advisory** — a score below `JUDGE_FLOOR` (default 3)
   fails to catch egregious regressions. It is offline eval tooling, *not* part of
-  the runtime agent (the one-agent / one-completion rules govern `run_turn` only).
+  the runtime agent (the one-agent / one-completion rules govern the hosted agent only).
 
 Run it locally before merging:
 

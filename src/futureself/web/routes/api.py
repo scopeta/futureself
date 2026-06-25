@@ -10,7 +10,6 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from futureself.db.engine import get_db
-from futureself.orchestrator import run_turn
 from futureself.schemas import (
     BioData,
     BiomarkerEntry,
@@ -19,6 +18,7 @@ from futureself.schemas import (
     Supplement,
     UserBlueprint,
 )
+from futureself.web.agent_client import apply_turn, synthesize
 from futureself.web.auth import AuthError, auth_enabled, bearer_token, validate_token
 from futureself.web.session import (
     create_session,
@@ -94,34 +94,26 @@ class ChatRequest(BaseModel):
 async def chat_send(body: ChatRequest, request: Request, db: DB) -> dict:
     """Process a user message and return the Future Self reply.
 
-    Requires ``Authorization: Bearer <token>`` header.
+    Delegates synthesis to the deployed Foundry hosted agent (spec §11) and
+    persists the turn (conversation history + extracted facts) to Postgres,
+    which remains the system of record. Requires ``Authorization: Bearer
+    <token>`` header.
     """
     user_id, blueprint = await _require_identity(request, db)
     try:
-        result = await run_turn(blueprint, body.message)
+        reply = await synthesize(blueprint, body.message)
     except Exception:
-        # The LLM provider can return transient errors (e.g. Anthropic 429/529
-        # overload, timeouts). Don't surface a raw 500 — log the full traceback
-        # for diagnosis and return a retryable 503 with a friendly message.
-        logger.exception("run_turn failed for chat/send")
+        # The hosted agent / LLM provider can return transient errors (overload,
+        # timeouts) or the endpoint may be briefly unreachable. Don't surface a
+        # raw 500 — log the full traceback and return a retryable 503.
+        logger.exception("hosted agent synthesis failed for chat/send")
         raise HTTPException(
             status_code=503,
             detail="I'm having trouble gathering my thoughts right now — give me a moment and try again.",
         ) from None
-    await save_blueprint_by_user_id(user_id, result.updated_blueprint, db)
 
-    # Surface a fallback (a less-capable model served this turn) to the client so
-    # the UI can tell the user — never serve a degraded answer silently. run_turn
-    # records the substitute in LLMCallTrace.model_actual (None on the normal path).
-    trace = result.llm_traces[0] if result.llm_traces else None
-    degraded = bool(trace and trace.model_actual)
-    response: dict = {"reply": result.user_facing_reply, "degraded": degraded}
-    if degraded:
-        response["notice"] = (
-            "I'm answering with a backup model right now because demand is high — "
-            "my reply may be a little less detailed than usual."
-        )
-    return response
+    await save_blueprint_by_user_id(user_id, apply_turn(blueprint, body.message, reply), db)
+    return {"reply": reply}
 
 
 # ---------------------------------------------------------------------------

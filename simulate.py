@@ -29,12 +29,12 @@ from futureself.eval import (
     format_report,
     to_json,
 )
-from futureself.orchestrator import run_turn
 from futureself.schemas import (
     LLMCallTrace,
     OrchestratorResult,
     UserBlueprint,
 )
+from futureself.web.agent_client import apply_turn, synthesize
 
 SCENARIO_DIR = Path(__file__).parent / "scenarios"
 
@@ -127,14 +127,22 @@ async def run_scenario(
         if not eval_json:
             print(f"\n>> User: {user_msg}")
 
-        result = await run_turn(blueprint, user_msg)
+        # Drive the deployed hosted agent (spec §11). Traces now live in the
+        # agent's App Insights, not returned inline, so llm_traces is empty here.
+        reply = await synthesize(blueprint, user_msg)
+        new_blueprint = apply_turn(blueprint, user_msg, reply)
+        result = OrchestratorResult(
+            user_facing_reply=reply,
+            updated_blueprint=new_blueprint,
+            llm_traces=[],
+        )
         results.append(result)
 
         if not eval_json:
             print_result(result, i, verbose, show_traces)
 
         # Carry forward updated blueprint
-        blueprint = result.updated_blueprint
+        blueprint = new_blueprint
 
     # Deterministic evaluation (assertions are computed from each turn's `expect`)
     scenario_eval = evaluate_scenario(scenario["name"], turns_spec, results)

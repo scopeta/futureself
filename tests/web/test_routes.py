@@ -9,32 +9,6 @@ from unittest.mock import AsyncMock, patch
 
 from httpx import AsyncClient
 
-from futureself.schemas import LLMCallTrace, OrchestratorResult, UserBlueprint
-
-
-def _mock_result(
-    reply: str = "Hello from the future.",
-    blueprint: UserBlueprint | None = None,
-    model_actual: str | None = None,
-) -> OrchestratorResult:
-    traces = (
-        [
-            LLMCallTrace(
-                task="orchestrator.run_turn",
-                model_requested="claude-opus-4-8",
-                model_actual=model_actual,
-                latency_ms=0.0,
-            )
-        ]
-        if model_actual is not None
-        else []
-    )
-    return OrchestratorResult(
-        user_facing_reply=reply,
-        updated_blueprint=blueprint or UserBlueprint(inferred_facts=["User greeted"]),
-        llm_traces=traces,
-    )
-
 
 async def _create_session(client: AsyncClient) -> str:
     resp = await client.post("/api/session/create")
@@ -112,9 +86,9 @@ async def test_chat_send_with_invalid_token_returns_401(client):
     assert resp.status_code == 401
 
 
-@patch("futureself.web.routes.api.run_turn", new_callable=AsyncMock)
-async def test_chat_send_returns_reply(mock_run_turn, client):
-    mock_run_turn.return_value = _mock_result("I remember when we faced this too.")
+@patch("futureself.web.routes.api.synthesize", new_callable=AsyncMock)
+async def test_chat_send_returns_reply(mock_synthesize, client):
+    mock_synthesize.return_value = "I remember when we faced this too."
     token = await _create_session(client)
 
     resp = await client.post(
@@ -124,12 +98,12 @@ async def test_chat_send_returns_reply(mock_run_turn, client):
     )
     assert resp.status_code == 200
     assert resp.json()["reply"] == "I remember when we faced this too."
-    mock_run_turn.assert_called_once()
+    mock_synthesize.assert_awaited_once()
 
 
-@patch("futureself.web.routes.api.run_turn", new_callable=AsyncMock)
-async def test_chat_send_llm_error_returns_503(mock_run_turn, client):
-    mock_run_turn.side_effect = RuntimeError("anthropic 529 overloaded")
+@patch("futureself.web.routes.api.synthesize", new_callable=AsyncMock)
+async def test_chat_send_agent_error_returns_503(mock_synthesize, client):
+    mock_synthesize.side_effect = RuntimeError("hosted agent 529 overloaded")
     token = await _create_session(client)
     resp = await client.post(
         "/api/chat/send",
@@ -140,10 +114,10 @@ async def test_chat_send_llm_error_returns_503(mock_run_turn, client):
     assert "try again" in resp.json()["detail"].lower()
 
 
-@patch("futureself.web.routes.api.run_turn", new_callable=AsyncMock)
-async def test_chat_send_persists_updated_blueprint(mock_run_turn, client):
-    updated_bp = UserBlueprint(inferred_facts=["User feels stuck"])
-    mock_run_turn.return_value = _mock_result(blueprint=updated_bp)
+@patch("futureself.web.routes.api.synthesize", new_callable=AsyncMock)
+async def test_chat_send_persists_turn(mock_synthesize, client):
+    # The reply is persisted as conversation history; facts are extracted from it.
+    mock_synthesize.return_value = "I'm 47 years old and still going strong."
     token = await _create_session(client)
 
     await client.post(
@@ -156,12 +130,16 @@ async def test_chat_send_persists_updated_blueprint(mock_run_turn, client):
     resp = await client.get(
         "/api/blueprint", headers={"Authorization": f"Bearer {token}"}
     )
-    assert resp.json()["inferred_facts"] == ["User feels stuck"]
+    data = resp.json()
+    history = data["conversation_history"]
+    assert [t["role"] for t in history] == ["user", "assistant"]
+    assert history[0]["content"] == "I feel stuck"
+    assert any("47" in f for f in data["inferred_facts"])
 
 
-@patch("futureself.web.routes.api.run_turn", new_callable=AsyncMock)
-async def test_chat_send_does_not_expose_internal_data(mock_run_turn, client):
-    mock_run_turn.return_value = _mock_result("Wise words from the future.")
+@patch("futureself.web.routes.api.synthesize", new_callable=AsyncMock)
+async def test_chat_send_does_not_expose_internal_data(mock_synthesize, client):
+    mock_synthesize.return_value = "Wise words from the future."
     token = await _create_session(client)
 
     resp = await client.post(
@@ -169,25 +147,8 @@ async def test_chat_send_does_not_expose_internal_data(mock_run_turn, client):
         json={"message": "test"},
         headers={"Authorization": f"Bearer {token}"},
     )
-    # Only the reply + the degraded flag are exposed — no blueprint/bio internals.
-    assert set(resp.json().keys()) == {"reply", "degraded"}
-    assert resp.json()["degraded"] is False
-
-
-@patch("futureself.web.routes.api.run_turn", new_callable=AsyncMock)
-async def test_chat_send_flags_fallback_model(mock_run_turn, client):
-    # A fallback (model_actual set) must be surfaced to the client, never silent.
-    mock_run_turn.return_value = _mock_result("Backup reply.", model_actual="claude-sonnet-4-6")
-    token = await _create_session(client)
-    resp = await client.post(
-        "/api/chat/send",
-        json={"message": "test"},
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    body = resp.json()
-    assert body["reply"] == "Backup reply."
-    assert body["degraded"] is True
-    assert "notice" in body and body["notice"]
+    # Only the reply is exposed — no blueprint/bio internals.
+    assert set(resp.json().keys()) == {"reply"}
 
 
 # ---------------------------------------------------------------------------

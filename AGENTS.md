@@ -46,7 +46,8 @@ When rebuilding or refactoring, resolve conflicts in this order:
 - `futureself-spec.md` — runtime architecture, contracts, deployment, rebuild checklist.
 - `prompts/orchestrator.md` — agent system prompt.
 - `src/futureself/skills/<domain>/SKILL.md` — domain skill files.
-- `src/futureself/orchestrator.py` — `run_turn` implementation (used by FastAPI BFF).
+- `src/futureself/orchestrator.py` — `build_agent`, the single agent builder (run by the hosted agent in `main.py`).
+- `src/futureself/web/agent_client.py` — BFF→hosted-agent client (`synthesize`, `apply_turn`); the BFF no longer runs the agent in-process.
 - `main.py` — Foundry Hosted Agent entrypoint (`ResponsesAgentServerHost` on :8088).
 - `agent.yaml` — `azd ai agent` hosted-agent manifest (flat schema: `protocol: responses`, `environment_variables`, Anthropic-direct).
 - `Dockerfile.agent` — dedicated image for the hosted agent (runs `python main.py`, not the BFF).

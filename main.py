@@ -1,16 +1,16 @@
-"""Foundry Hosted Agent container entrypoint (optional Foundry on-ramp).
+"""Foundry Hosted Agent container entrypoint — the single agent runtime.
 
 Exposes the FutureSelf agent via the Azure AI Responses protocol
 (POST /responses) on Hypercorn for the Foundry Hosted Agents platform.
 
-Topology (futureself-spec.md §11): the browser-facing React BFF (``web/app.py``)
-owns orchestration in-process via ``orchestrator.run_turn`` — this is the
-canonical path for the active Anthropic-direct deployment, and it keeps the
-Postgres-backed Blueprint, conversation history, and fact extraction. This
-Responses host is the *optional* Foundry path; the BFF only proxies it once
-Foundry Agent Service manages thread memory (``FOUNDRY_PROJECT_ENDPOINT`` set).
-Both paths build the identical agent via ``orchestrator.build_agent`` — one
-source of truth, no drift.
+Topology (futureself-spec.md §11): this Responses host is the **only** place the
+agent runs. The browser-facing React BFF (``web/app.py``) no longer orchestrates
+in-process — it calls this host over HTTP (``web/agent_client``) and remains the
+system of record for the Postgres-backed Blueprint, conversation history, and
+fact extraction. The agent endpoint is stateless per caller, so the BFF supplies
+the full per-turn context (profile + facts + recent history + message) as the
+request ``input``; this handler runs the agent on it. The agent is built via
+``orchestrator.build_agent`` — one source of truth, no drift.
 
 Local testing:
     python main.py        # 0.0.0.0:8088
@@ -79,10 +79,10 @@ async def handle_response(
 ) -> TextResponse:
     """Per-turn handler: assemble platform history + current message, run the agent.
 
-    Blueprint loading and fact extraction (``orchestrator.run_turn``) stay in
-    the BFF until the Foundry isolation-key ↔ Postgres user_id binding lands
-    (futureself-spec.md §11 + Phase 6.5). For now this handler runs the
-    agent stateless against Foundry-managed conversation history.
+    Blueprint custody and fact extraction live in the BFF (``web/agent_client``),
+    which sends the full per-turn context as ``input``. Any platform-managed
+    history (e.g. via ``azd ai agent invoke``) is folded in too, so this host
+    also works standalone. The agent is the single ``orchestrator.build_agent``.
     """
     user_message = await context.get_input_text()
     history_lines = [

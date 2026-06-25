@@ -1,7 +1,7 @@
 """LLM-as-judge evaluator for Future Self replies (offline quality gate).
 
 This is **evaluation tooling, not part of the runtime agent.** The single-agent
-and one-completion-per-turn rules (AGENTS.md) govern ``orchestrator.run_turn``;
+and one-completion-per-turn rules (AGENTS.md) govern the hosted agent's turn;
 the judge is a separate, offline scoring pass that issues its own completion to
 grade a reply against a rubric. It is non-deterministic and costs money, so it
 runs in the live tier (pre-merge / on demand), not in the per-push CI gate.

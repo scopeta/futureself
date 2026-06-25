@@ -1,192 +1,22 @@
-"""Tests for the orchestrator pipeline (MAF agent mocked)."""
-from __future__ import annotations
+"""Tests for the orchestrator — agent construction (the single agent builder).
 
-from unittest.mock import AsyncMock, MagicMock
+Per-turn execution moved out of the BFF in the Foundry cutover (spec §11); the
+turn-assembly helpers now live in ``futureself.web.agent_client`` and are tested
+in ``tests/web/test_agent_client.py``. What remains here is model resolution.
+"""
+from __future__ import annotations
 
 import pytest
 
-from futureself.orchestrator import (
-    run_turn,
-    _build_user_context,
-    _extract_facts_simple,
-    _is_transient,
-)
-from futureself.schemas import OrchestratorResult, UserBlueprint
+from futureself.orchestrator import _resolve_model
 
 
-class _TransientBoom(Exception):
-    status_code = 529
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _mock_agent(reply: str) -> MagicMock:
-    """Return a mock MAF agent that returns a fixed reply from agent.run()."""
-    result = MagicMock()
-    result.text = reply  # AgentResponse.text, not .value
-
-    agent = MagicMock()
-    agent.create_session = MagicMock(return_value=MagicMock())  # sync
-    agent.run = AsyncMock(return_value=result)
-    return agent
-
-
-# ---------------------------------------------------------------------------
-# 1. run_turn returns OrchestratorResult
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_run_turn_returns_result(blank_blueprint):
-    agent = _mock_agent("I remember when we struggled with this too...")
-    result = await run_turn(blank_blueprint, "How do I sleep better?", _agent=agent, _model="test-model")
-
-    assert isinstance(result, OrchestratorResult)
-    assert result.user_facing_reply == "I remember when we struggled with this too..."
-    assert result.updated_blueprint is not None
-    assert len(result.llm_traces) == 1
-
-
-@pytest.mark.asyncio
-async def test_run_turn_non_empty_reply(blank_blueprint):
-    agent = _mock_agent("Back when we were your age, we faced the same challenge...")
-    result = await run_turn(blank_blueprint, "test message", _agent=agent, _model="test-model")
-
-    assert result.user_facing_reply != ""
-
-
-@pytest.mark.asyncio
-async def test_run_turn_empty_model_reply(blank_blueprint):
-    """Graceful handling when the model returns an empty string."""
-    agent = _mock_agent("")
-    result = await run_turn(blank_blueprint, "test", _agent=agent, _model="test-model")
-
-    assert result.user_facing_reply == ""
-    assert isinstance(result, OrchestratorResult)
-
-
-# ---------------------------------------------------------------------------
-# 2. Blueprint is preserved and updated
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_run_turn_preserves_blueprint_immutability(sample_blueprint):
-    snapshot = sample_blueprint.model_dump()
-    agent = _mock_agent("Reply.")
-    await run_turn(sample_blueprint, "test", _agent=agent, _model="test-model")
-
-    assert sample_blueprint.model_dump() == snapshot, "Original blueprint was mutated"
-
-
-@pytest.mark.asyncio
-async def test_run_turn_updated_blueprint_has_conversation(blank_blueprint):
-    agent = _mock_agent("Future self reply here.")
-    result = await run_turn(blank_blueprint, "What should I eat?", _agent=agent, _model="test-model")
-
-    # Conversation history should be appended
-    history = result.updated_blueprint.conversation_history
-    assert any(t.role == "user" for t in history)
-    assert any(t.role == "assistant" for t in history)
-
-
-# ---------------------------------------------------------------------------
-# 3. Trace is recorded
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_run_turn_trace_recorded(blank_blueprint):
-    agent = _mock_agent("A reply.")
-    result = await run_turn(blank_blueprint, "test", _agent=agent, _model="test-model")
-
-    assert len(result.llm_traces) == 1
-    trace = result.llm_traces[0]
-    assert trace.task == "orchestrator.run_turn"
-    assert trace.model_requested == "test-model"
-    assert trace.latency_ms >= 0
-
-
-# ---------------------------------------------------------------------------
-# 4. extract_facts_simple
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# 3b. Resilience (retry / fallback / error classification)
-# ---------------------------------------------------------------------------
-
-
-def test_is_transient_classifies():
-    assert _is_transient(_TransientBoom()) is True  # status_code 529
-
-    class _Bad(Exception):
-        status_code = 400
-
-    assert _is_transient(_Bad()) is False  # client error, not transient
-
-    class OverloadedError(Exception):
-        pass
-
-    assert _is_transient(OverloadedError()) is True  # matched by class name
-    assert _is_transient(ValueError("bug")) is False
-
-
-@pytest.mark.asyncio
-async def test_run_turn_raises_on_persistent_transient(blank_blueprint, monkeypatch):
-    monkeypatch.setenv("FUTURESELF_LLM_RETRIES", "0")  # no backoff sleeps in test
-    agent = MagicMock()
-    agent.create_session = MagicMock(return_value=MagicMock())
-    agent.run = AsyncMock(side_effect=_TransientBoom("overloaded"))
-    with pytest.raises(_TransientBoom):
-        await run_turn(blank_blueprint, "hi", _agent=agent, _model="test-model")
-
-
-@pytest.mark.asyncio
-async def test_run_turn_raises_non_transient_immediately(blank_blueprint):
-    agent = MagicMock()
-    agent.create_session = MagicMock(return_value=MagicMock())
-    agent.run = AsyncMock(side_effect=ValueError("a real bug"))
+def test_resolve_model_requires_env(monkeypatch):
+    monkeypatch.delenv("FUTURESELF_MODEL", raising=False)
     with pytest.raises(ValueError):
-        await run_turn(blank_blueprint, "hi", _agent=agent, _model="test-model")
+        _resolve_model()
 
 
-def test_extract_facts_simple_age():
-    bp = UserBlueprint()
-    facts = _extract_facts_simple("I'm 35 years old and curious about longevity.", bp)
-    assert any("35" in f for f in facts)
-
-
-def test_extract_facts_simple_no_duplicates():
-    bp = UserBlueprint(inferred_facts=["User is 35 years old"])
-    facts = _extract_facts_simple("I'm 35 years old.", bp)
-    # Should not duplicate
-    assert not any("35" in f for f in facts)
-
-
-def test_extract_facts_simple_empty_reply():
-    bp = UserBlueprint()
-    facts = _extract_facts_simple("", bp)
-    assert facts == []
-
-
-# ---------------------------------------------------------------------------
-# 5. User context builder
-# ---------------------------------------------------------------------------
-
-
-def test_build_user_context_includes_message():
-    bp = UserBlueprint()
-    ctx = _build_user_context(bp, "Tell me about sleep.")
-    assert "Tell me about sleep." in ctx
-    assert "USER MESSAGE" in ctx
-
-
-def test_build_user_context_includes_facts():
-    bp = UserBlueprint(inferred_facts=["User is 40", "User lives in London"])
-    ctx = _build_user_context(bp, "test")
-    assert "User is 40" in ctx
-    assert "User lives in London" in ctx
+def test_resolve_model_returns_value(monkeypatch):
+    monkeypatch.setenv("FUTURESELF_MODEL", "claude-opus-4-8")
+    assert _resolve_model() == "claude-opus-4-8"
