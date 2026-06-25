@@ -1,0 +1,31 @@
+# Container for the Foundry Hosted Agent (Responses host).
+# Runs main.py (azure-ai-agentserver ResponsesAgentServerHost on Hypercorn) —
+# NOT the FastAPI BFF. The Foundry runtime uses the image CMD (it ignores
+# azure.yaml startupCommand), so the agent needs its own image. No frontend and
+# no DATABASE_URL: the hosted agent is stateless w.r.t. our DB (Foundry manages
+# thread memory); the BFF keeps the Postgres-backed Blueprint.
+FROM python:3.13-slim AS builder
+
+WORKDIR /app
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+COPY pyproject.toml uv.lock ./
+COPY src/ src/
+
+# Production deps only. --prerelease=allow: azure-ai-agentserver-responses is beta.
+RUN uv sync --frozen --no-dev --prerelease=allow
+# Force-reinstall core so its __init__.py wins the agent_framework namespace.
+RUN uv pip install --force-reinstall --no-deps agent-framework-core
+
+# ---- Runtime ----
+FROM python:3.13-slim
+
+WORKDIR /app
+COPY --from=builder /app/.venv .venv
+COPY src/ src/
+COPY prompts/ prompts/
+COPY main.py main.py
+
+ENV PATH="/app/.venv/bin:$PATH"
+ENV PYTHONUNBUFFERED=1
+
+CMD ["python", "main.py"]

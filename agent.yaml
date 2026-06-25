@@ -1,25 +1,23 @@
+# Foundry Hosted Agent manifest (azd ai agent — flat schema).
+# Anthropic-direct: the agent calls Claude via ANTHROPIC_API_KEY; Foundry hosts it
+# and manages thread memory. FOUNDRY_PROJECT_ENDPOINT is injected by the platform.
+# Container image + cpu/memory are configured in azure.yaml (Dockerfile.agent).
 kind: hosted
 name: futureself
 protocols:
-  - kind: responses
+  - protocol: responses
     version: 1.0.0
 resources:
   cpu: "0.5"
   memory: 1Gi
-environmentVariables:
+environment_variables:
   - name: FUTURESELF_MODEL
     value: claude-opus-4-8
-  # Empty → the hosted agent uses Anthropic-direct (AnthropicClient); Foundry only
-  # hosts the agent and manages thread memory. Do NOT set this for Anthropic-direct.
+  # Empty → Anthropic-direct chat client. Do NOT set for Foundry-direct.
   - name: AZURE_FOUNDRY_ENDPOINT
     value: ""
-  # REQUIRED for Anthropic-direct. Supply securely at deploy time (azd env / a
-  # Foundry connection) — never commit the key here.
+  # Injected from the azd environment at deploy (azd env set ANTHROPIC_API_KEY ...).
   - name: ANTHROPIC_API_KEY
-    value: ""
-  - name: APPLICATIONINSIGHTS_CONNECTION_STRING
-    value: ""
+    value: "${ANTHROPIC_API_KEY}"
   - name: DEFAULT_FETCH_HISTORY_ITEM_COUNT
     value: "20"
-# FOUNDRY_PROJECT_ENDPOINT is injected automatically by the Foundry platform on
-# deployed agents (enables FoundryStorageProvider thread memory) — not set here.

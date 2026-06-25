@@ -13,3 +13,4 @@ frontend/dist/
 frontend/.lovable
 .claude/worktrees/
 .claude/settings.local.json
+.azure
