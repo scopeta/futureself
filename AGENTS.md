@@ -48,7 +48,9 @@ When rebuilding or refactoring, resolve conflicts in this order:
 - `src/futureself/skills/<domain>/SKILL.md` — domain skill files.
 - `src/futureself/orchestrator.py` — `run_turn` implementation (used by FastAPI BFF).
 - `main.py` — Foundry Hosted Agent entrypoint (`ResponsesAgentServerHost` on :8088).
-- `agent.yaml` — `azd ai agent` deployment manifest (Responses protocol, 0.5 vCPU / 1 GiB).
+- `agent.yaml` — `azd ai agent` hosted-agent manifest (flat schema: `protocol: responses`, `environment_variables`, Anthropic-direct).
+- `Dockerfile.agent` — dedicated image for the hosted agent (runs `python main.py`, not the BFF).
+- `azure.yaml` — azd project (agent service → `Dockerfile.agent`); `infra/` holds the generated bicep (reuses the existing Foundry project).
 - `tests/` — unit and integration tests (live tests gated by the `live` marker).
 - `scenarios/` — live scenario YAML files.
 - `infra/azure/main.bicep` — Azure deployment template.

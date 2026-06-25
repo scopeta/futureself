@@ -407,7 +407,7 @@ Schema impact (Section 5.1): `UserBlueprint` is conceptually per-user; the persi
 
 ---
 
-## 11. Foundry Hosted Agents Migration (on-ramp complete; BFF cutover gated on Foundry)
+## 11. Foundry Hosted Agents Migration (hosted agent deployed; BFF cutover pending)
 
 ### 11.0 Active topology (Anthropic direct)
 
@@ -425,6 +425,30 @@ points construct the identical agent through the single shared builder
 BFF cutover described in §11.1 below is therefore **gated on Foundry Agent
 Service** managing thread memory (`FOUNDRY_PROJECT_ENDPOINT` set); until then,
 the in-process BFF path stands.
+
+### 11.0.1 Hosted agent deployment — LIVE (2026-06-25)
+
+The Future Self agent is deployed as a **Foundry Hosted Agent** in the existing
+project (`fsrfoundry-res` / `project-default`), reusing it — no new project:
+
+- **Tooling:** `azd` + the `azure.ai.agents` extension, `USE_EXISTING_AI_PROJECT=true`
+  (provision is a near-no-op: tags the RG and adds an ACR + Foundry connection;
+  the existing project is referenced read-only).
+- **Container:** `Dockerfile.agent` runs `python main.py` (the Responses host).
+  The agent needs its **own** image — the Foundry runtime uses the image `CMD`
+  (not `azure.yaml startupCommand`), and the BFF image runs uvicorn + needs
+  `DATABASE_URL` the agent doesn't.
+- **Manifest (`agent.yaml`):** flat schema — `protocol: responses` (not `kind:`),
+  `environment_variables` (snake_case), `ANTHROPIC_API_KEY` from the azd env
+  (`${ANTHROPIC_API_KEY}`). Anthropic-direct (`AZURE_FOUNDRY_ENDPOINT` empty);
+  the platform injects `FOUNDRY_PROJECT_ENDPOINT`, so `FoundryStorageProvider`
+  manages thread memory.
+- **Deploy/verify:** `azd deploy` (remote image build → register version → wait
+  active); `azd ai agent invoke` confirmed a real in-character reply (`futureself:5`).
+- **Endpoint:** `…/projects/project-default/agents/futureself/endpoint/protocols/openai/responses?api-version=v1`.
+
+The BFF has **not** yet cut over — it still calls `run_turn` in-process. The
+cutover (§11.1) and auth activation (§11.4) remain.
 
 The Hosted Agents on-ramp uses the Azure AI Responses protocol via
 `azure-ai-agentserver-responses` (protocol host) + `azure-ai-agentserver-core`
