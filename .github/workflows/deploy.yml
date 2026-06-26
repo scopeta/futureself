@@ -79,10 +79,19 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           APPLICATIONINSIGHTS_CONNECTION_STRING: ${{ secrets.APPLICATIONINSIGHTS_CONNECTION_STRING }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          # BFF → hosted agent (spec §11). FOUNDRY_AGENT_ENDPOINT is a URL (not a
+          # secret); FOUNDRY_RESOURCE_ID is the Foundry account ARM id used as the
+          # scope for the invoke role grant.
+          FOUNDRY_AGENT_ENDPOINT: ${{ secrets.FOUNDRY_AGENT_ENDPOINT }}
+          FOUNDRY_RESOURCE_ID: ${{ secrets.FOUNDRY_RESOURCE_ID }}
+          # "Azure AI User" / "Foundry User" — invoke rights on the Foundry data
+          # plane. Pinned by GUID (MS recommends the id over the renamed display name).
+          FOUNDRY_ROLE_ID: "53ca6127-db72-4b80-b1b0-d745d6d5456d"
         run: |
           az extension add --name containerapp --upgrade -y
           # Sensitive values live as Container App SECRETS; env vars reference them
           # via secretref:* so they never appear as plaintext in the app config.
+          # FUTURESELF_MODEL / FOUNDRY_AGENT_ENDPOINT are plain (non-secret).
           if az containerapp show -n futureself -g "$RG" &>/dev/null; then
             echo "Existing app found — set secrets, then zero-downtime rolling update"
             az containerapp secret set -n futureself -g "$RG" --secrets \
@@ -92,6 +101,7 @@ jobs:
             az containerapp update -n futureself -g "$RG" --image "$IMG" \
               --set-env-vars \
                 FUTURESELF_MODEL="$MODEL" \
+                FOUNDRY_AGENT_ENDPOINT="$FOUNDRY_AGENT_ENDPOINT" \
                 ANTHROPIC_API_KEY=secretref:anthropic-api-key \
                 APPLICATIONINSIGHTS_CONNECTION_STRING=secretref:appinsights-conn \
                 DATABASE_URL=secretref:database-url
@@ -107,13 +117,40 @@ jobs:
               --registry-username ${{ secrets.ACR_USERNAME }} \
               --registry-password ${{ secrets.ACR_PASSWORD }} \
               --target-port 8000 --ingress external \
+              --system-assigned \
               --secrets \
                 anthropic-api-key="$ANTHROPIC_API_KEY" \
                 database-url="$DATABASE_URL" \
                 appinsights-conn="$APPLICATIONINSIGHTS_CONNECTION_STRING" \
               --env-vars \
                 FUTURESELF_MODEL="$MODEL" \
+                FOUNDRY_AGENT_ENDPOINT="$FOUNDRY_AGENT_ENDPOINT" \
                 ANTHROPIC_API_KEY=secretref:anthropic-api-key \
                 APPLICATIONINSIGHTS_CONNECTION_STRING=secretref:appinsights-conn \
                 DATABASE_URL=secretref:database-url
+          fi
+
+          # --- Grant the BFF identity invoke rights on the hosted agent ---
+          # The BFF authenticates to the agent with its system-assigned managed
+          # identity (DefaultAzureCredential). Ensure it exists (idempotent), then
+          # grant the Foundry "Azure AI User" role on the Foundry account scope.
+          PRINCIPAL_ID=$(az containerapp identity assign -n futureself -g "$RG" \
+            --system-assigned --query principalId -o tsv)
+          echo "BFF managed identity principalId: $PRINCIPAL_ID"
+
+          if [ -z "$FOUNDRY_AGENT_ENDPOINT" ]; then
+            echo "::warning::FOUNDRY_AGENT_ENDPOINT secret is empty — the BFF will 503 on /chat/send until it is set."
+          fi
+          if [ -n "$FOUNDRY_RESOURCE_ID" ] && [ -n "$PRINCIPAL_ID" ]; then
+            # Idempotent: re-running returns the existing assignment. Needs the CI
+            # principal to have Owner / User Access Administrator on the scope.
+            az role assignment create \
+              --assignee-object-id "$PRINCIPAL_ID" \
+              --assignee-principal-type ServicePrincipal \
+              --role "$FOUNDRY_ROLE_ID" \
+              --scope "$FOUNDRY_RESOURCE_ID" \
+              && echo "Role granted (or already present)." \
+              || echo "::warning::Could not assign the Foundry invoke role to the BFF identity on $FOUNDRY_RESOURCE_ID. Grant it once with infra/grant-bff-foundry-role.sh (needs Owner/UAA on the scope)."
+          else
+            echo "::warning::FOUNDRY_RESOURCE_ID unset — skipping role grant. The BFF identity needs the Foundry 'Azure AI User' role on the agent before /chat/send works (see infra/grant-bff-foundry-role.sh)."
           fi

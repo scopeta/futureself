@@ -71,5 +71,11 @@ When rebuilding or refactoring, resolve conflicts in this order:
   Builds the container, pushes to ACR, and rolls it out to Azure Container Apps
   (Southeast Asia) as a **zero-downtime update** (`az containerapp update --image`;
   stable URL, old revision serves until the new one is healthy; creates the app on
-  first run).
+  first run). It also enables the BFF's **system-assigned managed identity** and
+  grants it the Foundry "Azure AI User" role (GUID `53ca6127-…`) on
+  `FOUNDRY_RESOURCE_ID` so the BFF can call the hosted agent. New required
+  secrets: `FOUNDRY_AGENT_ENDPOINT` (agent Responses base URL) and
+  `FOUNDRY_RESOURCE_ID` (Foundry account ARM id, the role scope). If the CI
+  principal lacks Owner/UAA on that scope, the grant warns instead of failing —
+  run `infra/grant-bff-foundry-role.sh` once with elevated creds.
 - `main` is the default branch. CI must pass before merging.

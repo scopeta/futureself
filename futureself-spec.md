@@ -454,6 +454,15 @@ on the agent resource. No API-key path exists for the endpoint.
 **Config.** `FOUNDRY_AGENT_ENDPOINT` (the Responses base URL) is required on the
 BFF; `FOUNDRY_AGENT_API_VERSION` defaults to `v1`.
 
+**Deploy wiring (`deploy.yml`).** The workflow sets `FOUNDRY_AGENT_ENDPOINT` on
+the Container App, enables the app's system-assigned managed identity, and grants
+it the Foundry "Azure AI User"/"Foundry User" role (GUID
+`53ca6127-db72-4b80-b1b0-d745d6d5456d`) on `FOUNDRY_RESOURCE_ID` (the Foundry
+account ARM id). The grant is idempotent and warns-but-doesn't-fail if the CI
+principal lacks Owner/User Access Administrator on that scope — in that case run
+`infra/grant-bff-foundry-role.sh` once with elevated credentials. Required GitHub
+secrets: `FOUNDRY_AGENT_ENDPOINT`, `FOUNDRY_RESOURCE_ID`.
+
 ### 11.0.1 Hosted agent deployment — LIVE (2026-06-25)
 
 The Future Self agent is deployed as a **Foundry Hosted Agent** in the existing
