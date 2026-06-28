@@ -13,14 +13,14 @@
 set -euo pipefail
 
 APP="${APP:-futureself}"
-: "${RG:?Set RG to the Container App's resource group}"
+: "${RG:?Set RG to the Container App resource group}"
 : "${FOUNDRY_RESOURCE_ID:?Set FOUNDRY_RESOURCE_ID to the Foundry account (or project) ARM id}"
 
 # "Azure AI User" / "Foundry User" — reader on the project/account + data-plane
 # actions (agent invocation). Pinned by GUID to survive the display-name rename.
 ROLE_ID="53ca6127-db72-4b80-b1b0-d745d6d5456d"
 
-echo "Ensuring system-assigned identity on Container App '$APP'..."
+echo "Ensuring system-assigned identity on Container App $APP ..."
 PRINCIPAL_ID=$(az containerapp identity assign -n "$APP" -g "$RG" \
   --system-assigned --query principalId -o tsv)
 echo "  principalId: $PRINCIPAL_ID"
