@@ -18,15 +18,148 @@ personalized, long-horizon advice.
 The defining design choices:
 
 - **One user-facing agent.** No sub-agent fan-out, no debate/critique rounds.
-- **One LLM completion per turn** (plus zero-cost tool calls to load skills).
-- **Domain expertise lives in skills**, not in the orchestrator prompt — loaded
+- **~1–2 LLM completions per turn** — skill-loading adds a tool round-trip; no
+  multi-pass refinement.
+- **Domain expertise lives in skills**, not in the agent prompt — loaded
   on demand via the Microsoft Agent Framework (MAF) `SkillsProvider`.
-- **The orchestrator is the only writer of the user's Blueprint**, and it
-  mutates it immutably (`model_copy`, never in place).
+- **Blueprint writes go through a single controlled path** and are immutable
+  (`model_copy`, never in place).
+
+> New to the project / prepping to explain it? **§2 is the design-rationale and
+> evolution story** (the journey from a multi-agent committee to a single agent
+> with skills, and from in-process orchestration to a hosted agent).
 
 ---
 
-## 2. High-level architecture
+## 2. Design decisions & the journey (the interview narrative)
+
+This section is the **"why."** Two architectural pivots are the story worth
+telling: *many specialized agents → one agent + skills*, and *in-process
+orchestration → a hosted agent over HTTP*.
+
+### 2.1 The core insight
+
+The product is **holistic, long-horizon guidance in one coherent voice**. A
+longevity question ("should I buy a motorcycle at 45?") is never purely physical
+or purely financial — the value is the *synthesis across domains*, delivered as a
+single "Future Self" persona. That insight drives every structural choice:
+**keep the synthesis whole, keep the voice singular.**
+
+### 2.2 Journey 1 — from a multi-agent committee to a single agent + skills
+
+**The tempting first design** (the one most "agentic" frameworks nudge you
+toward): a router/orchestrator that dispatches to specialist agents — one per
+domain — then a synthesizer (optionally with a critique/debate round) merges
+their outputs.
+
+```mermaid
+flowchart TD
+    U[User message] --> R[Router / Orchestrator agent]
+    R --> P[Physical agent]
+    R --> M[Mental agent]
+    R --> F[Financial agent]
+    R --> S[Social agent]
+    P --> Syn[Synthesizer agent]
+    M --> Syn
+    F --> Syn
+    S --> Syn
+    Syn --> Cr[Critique / refine round]
+    Cr --> Out[Reply]
+    style R stroke-dasharray: 5 5
+    style Cr stroke-dasharray: 5 5
+```
+*Rejected design — shown for contrast.*
+
+**Why it's tempting:** clean separation of concerns, per-domain specialization,
+apparent parallelism.
+
+**Why it's the wrong fit here:**
+- **Persona fragmentation.** Six specialist voices must be re-merged into one
+  "Future Self" — you spend a whole synthesis pass undoing the fragmentation you
+  just created.
+- **Synthesis *is* the product.** Multi-agent splits exactly the cross-domain
+  reasoning that delivers the value; the interesting trade-offs live *between*
+  domains, not inside them.
+- **Cost & latency.** Router + N specialists + synthesizer (+ critique) = 5–10
+  LLM calls per turn, each re-sent the user's profile — often an order of
+  magnitude more tokens and seconds.
+- **Context duplication.** Every specialist needs the full Blueprint; you either
+  copy it everywhere (cost) or starve agents of context (quality).
+- **Operational drag.** Routing logic, per-agent failure handling, multi-agent
+  debugging, more prompts to drift out of sync.
+
+**The chosen design:** **one agent**; domain depth comes from **on-demand skills**
+(progressive disclosure). The model *itself* routes — it reads a lightweight
+manifest (skill name + one-line description) and calls `load_skill` for the
+relevant ones. Routing collapses from "a separate agent" into "a cheap tool call."
+
+| Dimension | Multi-agent committee | Single agent + skills (chosen) |
+|---|---|---|
+| Persona coherence | Fragmented; needs re-merge | Native — one voice |
+| LLM calls / turn | ~5–10 | ~1–2 (skills add one tool round-trip) |
+| Cross-domain synthesis | Bolted on at the end | Inherent to the single pass |
+| Context handling | Duplicated to each agent | Assembled once |
+| Extensibility | New agent + wiring + prompt | Add one `SKILL.md` file |
+| Debuggability | Trace across many agents | One trace, one prompt |
+| Cost / latency | High | Low |
+| Core trade-off | Specialization | Relies on a capable generalist model |
+
+**Cons of the chosen design (and mitigations):**
+- *Needs a strong generalist model* → use a frontier model (Opus 4.8) that
+  reasons well across all six domains.
+- *Skill-selection quality = model quality* → acceptable and **observable**
+  (traces show which skills loaded); manifest descriptions are tuned to guide it.
+- *No cross-domain parallelism* → fine: synthesis is inherently sequential, and
+  we only pay for the domains actually loaded.
+- *Context must hold profile + history + loaded skills* → progressive disclosure
+  keeps it lean (names + descriptions until a skill is actually needed).
+
+**The litmus test (good interview line):** *would a great human advisor convene a
+committee, or read up on the relevant areas and give one integrated answer?* The
+architecture mirrors the second — the real cognitive model of an expert generalist.
+
+### 2.3 Journey 2 — from in-process orchestration to a hosted agent over HTTP
+
+**v1:** the web backend (BFF) ran the agent **in-process** — one function call
+per turn, with retry + model-fallback logic in the web tier.
+
+**v2 (current):** the agent is deployed as a **Foundry Hosted Agent**; the BFF
+calls it **over HTTP** and becomes a thin client + system-of-record.
+
+**Why pivot:**
+- **One agent definition, many channels.** The same hosted agent serves the web
+  BFF today and (e.g.) WhatsApp tomorrow — no agent logic duplicated per channel.
+- **Independent scaling.** The LLM/skills workload scales separately from the web
+  tier (scale-to-zero when idle).
+- **Single runtime, no drift.** Exactly one place builds and runs the agent.
+- **Managed observability** via the platform's OpenTelemetry pipeline.
+
+**Trade-offs (be honest about them):**
+- **+** simpler BFF, single source of truth for the agent, channel reuse, managed scaling.
+- **−** a network hop; **cold-start latency** (scale-to-zero adds seconds —
+  measured ~30 s on the first call after idle; fix with `minReplicas: 1` at higher
+  cost); the endpoint is **stateless per caller** (no per-user isolation yet), so
+  the BFF must own conversation history and resend full context each turn; the
+  in-process model-fallback was dropped (now relying on SDK/agent retries).
+- **An honest reversal worth mentioning:** the original plan assumed Foundry would
+  manage thread memory; the endpoint turned out stateless per caller, so
+  **Postgres stayed the system of record.** Adapting the design to platform
+  reality — rather than forcing the plan — is itself a decision.
+
+### 2.4 Cross-cutting principles
+- **Immutability** (`model_copy`, never in place) → predictable state, trivial to
+  test, no action-at-a-distance bugs.
+- **Never crash a turn** → malformed/empty output degrades to safe defaults; a
+  hosted-agent failure returns a retryable **503**, never a raw 500.
+- **Eval-as-reviewer** (solo project) → deterministic assertions + an LLM-as-judge
+  stand in for a human PR reviewer (§11).
+- **Observability-first** → distributed tracing in App Insights literally *proves*
+  the "~1–2 completions per turn" claim (two `chat` spans with `load_skill`
+  between them; BFF role `futureself-bff`, agent role `agentsv2`).
+
+---
+
+## 3. High-level architecture
 
 ```mermaid
 flowchart TD
@@ -72,7 +205,7 @@ including conversation history. See
 
 ---
 
-## 3. The turn lifecycle
+## 4. The turn lifecycle
 
 What happens on a single `POST /api/chat/send`:
 
@@ -121,7 +254,7 @@ Key invariants enforced here:
 
 ---
 
-## 4. Skills: progressive domain disclosure
+## 5. Skills: progressive domain disclosure
 
 Domain knowledge is **not** baked into the system prompt. Each domain is a
 folder with a `SKILL.md` (YAML frontmatter `name` + `description`, then the
@@ -155,9 +288,9 @@ The six skills (each `src/futureself/skills/<name>/SKILL.md`):
 
 ---
 
-## 5. Data model
+## 6. Data model
 
-### 5.1 Persistence (PostgreSQL)
+### 6.1 Persistence (PostgreSQL)
 
 ```mermaid
 erDiagram
@@ -186,7 +319,7 @@ A session **Bearer token** maps to a user; each user has one `blueprints` row
 whose `data` column stores the entire `UserBlueprint` serialized as JSON(B).
 Schema is managed by Alembic (`alembic/versions/`).
 
-### 5.2 Domain object (`UserBlueprint`, in `schemas.py`)
+### 6.2 Domain object (`UserBlueprint`, in `schemas.py`)
 
 The Blueprint is a frozen Pydantic model — the user's evolving profile:
 
@@ -203,7 +336,7 @@ Other contracts: `OrchestratorResult` (reply + updated Blueprint + traces) and
 
 ---
 
-## 6. Provider selection & deployment topology
+## 7. Provider selection & deployment topology
 
 The same agent builder supports two backends, chosen by environment variable:
 
@@ -216,17 +349,26 @@ flowchart TD
     Akey -->|"no"| Err["raise ValueError"]
 ```
 
-- **Active deployment:** Anthropic direct, `FUTURESELF_MODEL=claude-opus-4-8`.
-- **Optional:** Azure AI Foundry (any Foundry-deployed model) via the
-  Responses host in `main.py`.
-- **Cloud target (per CI):** container pushed to ACR and deployed to Azure
-  Container Apps; infra in `infra/azure/main.bicep`. Observability is MAF's
-  built-in OpenTelemetry → Application Insights (enabled only when
-  `APPLICATIONINSIGHTS_CONNECTION_STRING` is set).
+- **Model provider (inside the agent):** Anthropic direct,
+  `FUTURESELF_MODEL=claude-opus-4-8`. `FoundryChatClient` is the model-agnostic
+  alternative (any Foundry-deployed model) — same builder, no code change.
+- **Two deployables:**
+  - **BFF** → Docker image → ACR → **Azure Container Apps** (`deploy.yml`,
+    zero-downtime rolling update). Has a **system-assigned managed identity** with
+    the Foundry *Azure AI User* role, which is how it authenticates to the agent.
+    Trace role: `futureself-bff`.
+  - **Hosted agent** → `Dockerfile.agent` → **Foundry Hosted Agent** (deployed via
+    `azd`). **Scales to zero** when idle (cold start adds seconds on the first call
+    after idle). Trace role: `agentsv2`.
+- **Observability:** both processes emit OpenTelemetry → the same Application
+  Insights (`futureself-insights`); one chat turn shows as two correlated
+  transactions (BFF request + agent run). Enabled when
+  `APPLICATIONINSIGHTS_CONNECTION_STRING` is set; `OTEL_SERVICE_NAME` sets the
+  trace role name.
 
 ---
 
-## 7. Repository map
+## 8. Repository map
 
 | Path | Responsibility |
 |------|----------------|
@@ -252,7 +394,7 @@ flowchart TD
 
 ---
 
-## 8. REST API surface (BFF)
+## 9. REST API surface (BFF)
 
 All under `/api`; chat and blueprint routes require `Authorization: Bearer <token>`.
 
@@ -269,7 +411,7 @@ All under `/api`; chat and blueprint routes require `Authorization: Bearer <toke
 
 ---
 
-## 9. Running it locally
+## 10. Running it locally
 
 The agent and the BFF are two processes (spec §11). Copy `.env.example` → `.env`
 first; it documents which vars belong to which process.
@@ -294,7 +436,7 @@ first; it documents which vars belong to which process.
 
 ---
 
-## 10. Evaluation (the reviewer for a solo project)
+## 11. Evaluation (the reviewer for a solo project)
 
 With no human PR reviewer, an automated **evaluator** is the quality gate before
 changes land on `main`. It runs in two tiers:
@@ -332,7 +474,7 @@ pytest tests/scenarios/ -m live -v            # all scenarios, both tiers
 Or trigger the **Live Eval Gate** workflow on GitHub (`live.yml`,
 `workflow_dispatch`; needs the `ANTHROPIC_API_KEY` secret).
 
-## 11. Where to go deeper
+## 12. Where to go deeper
 
 - **Contracts, persistence boundaries, rebuild checklist:** [`futureself-spec.md`](./futureself-spec.md)
 - **Governance, coding standards, do-not-do list:** [`AGENTS.md`](./AGENTS.md)

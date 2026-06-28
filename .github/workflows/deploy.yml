@@ -102,6 +102,7 @@ jobs:
               --set-env-vars \
                 FUTURESELF_MODEL="$MODEL" \
                 FOUNDRY_AGENT_ENDPOINT="$FOUNDRY_AGENT_ENDPOINT" \
+                OTEL_SERVICE_NAME=futureself-bff \
                 ANTHROPIC_API_KEY=secretref:anthropic-api-key \
                 APPLICATIONINSIGHTS_CONNECTION_STRING=secretref:appinsights-conn \
                 DATABASE_URL=secretref:database-url
@@ -125,6 +126,7 @@ jobs:
               --env-vars \
                 FUTURESELF_MODEL="$MODEL" \
                 FOUNDRY_AGENT_ENDPOINT="$FOUNDRY_AGENT_ENDPOINT" \
+                OTEL_SERVICE_NAME=futureself-bff \
                 ANTHROPIC_API_KEY=secretref:anthropic-api-key \
                 APPLICATIONINSIGHTS_CONNECTION_STRING=secretref:appinsights-conn \
                 DATABASE_URL=secretref:database-url
