@@ -21,12 +21,19 @@ target_metadata = Base.metadata
 
 
 def _sync_url() -> str:
-    """Return a sync PostgreSQL URL for alembic (psycopg2 driver)."""
+    """Return a sync DB URL for alembic (migrations run synchronously).
+
+    Swaps the async driver for its sync counterpart: Azure SQL
+    ``mssql+aioodbc`` → ``mssql+pyodbc`` (and legacy ``postgresql+asyncpg`` →
+    ``postgresql+psycopg2``).
+    """
     url = os.environ.get("DATABASE_URL", "")
     if not url:
         raise RuntimeError("DATABASE_URL env var is required for migrations.")
-    # Convert asyncpg URL to psycopg2 for alembic
-    return url.replace("postgresql+asyncpg://", "postgresql+psycopg2://")
+    return (
+        url.replace("mssql+aioodbc://", "mssql+pyodbc://")
+        .replace("postgresql+asyncpg://", "postgresql+psycopg2://")
+    )
 
 
 def run_migrations_offline() -> None:

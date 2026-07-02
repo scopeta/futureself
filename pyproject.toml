@@ -19,8 +19,8 @@ dependencies = [
     "azure-monitor-opentelemetry>=1.6",
     "sqlalchemy[asyncio]>=2.0",
     "alembic>=1.13",
-    "asyncpg>=0.30",
-    "psycopg2-binary>=2.9",
+    "aioodbc>=0.5",
+    "pyodbc>=5.1",
 ]
 
 [project.optional-dependencies]

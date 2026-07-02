@@ -30,11 +30,12 @@ from futureself.eval import (
     to_json,
 )
 from futureself.schemas import (
+    ConversationTurn,
     LLMCallTrace,
     OrchestratorResult,
     UserBlueprint,
 )
-from futureself.web.agent_client import apply_turn, synthesize
+from futureself.web.agent_client import synthesize
 
 SCENARIO_DIR = Path(__file__).parent / "scenarios"
 
@@ -88,11 +89,6 @@ def print_result(result: OrchestratorResult, turn_num: int, verbose: bool, show_
 
     print_section("Future Self Reply", result.user_facing_reply)
 
-    if result.updated_blueprint.inferred_facts:
-        print_section("Inferred Facts", "\n".join(
-            f"  - {f}" for f in result.updated_blueprint.inferred_facts
-        ))
-
     if show_traces and result.llm_traces:
         print_section("LLM Traces", "")
         for trace in result.llm_traces:
@@ -121,28 +117,33 @@ async def run_scenario(
     blueprint = UserBlueprint.from_dict(scenario.get("user_blueprint", {}))
     turns_spec = scenario.get("turns", [])
     results: list[OrchestratorResult] = []
+    recent_messages: list[ConversationTurn] = []
 
     for i, turn in enumerate(turns_spec, start=1):
         user_msg = turn["user_message"].strip()
         if not eval_json:
             print(f"\n>> User: {user_msg}")
 
-        # Drive the deployed hosted agent (spec §11). Traces now live in the
-        # agent's App Insights, not returned inline, so llm_traces is empty here.
-        reply = await synthesize(blueprint, user_msg)
-        new_blueprint = apply_turn(blueprint, user_msg, reply)
+        # Drive the deployed hosted agent (spec §11) with a local transcript
+        # window (the BFF uses the messages table; here we keep it in memory).
+        # Traces live in the agent's App Insights, not inline, so llm_traces is [].
+        reply = await synthesize(blueprint, recent_messages, user_msg)
+        recent_messages = (
+            recent_messages
+            + [
+                ConversationTurn(role="user", content=user_msg),
+                ConversationTurn(role="assistant", content=reply),
+            ]
+        )[-20:]
         result = OrchestratorResult(
             user_facing_reply=reply,
-            updated_blueprint=new_blueprint,
+            updated_blueprint=blueprint,  # unchanged by a chat turn now
             llm_traces=[],
         )
         results.append(result)
 
         if not eval_json:
             print_result(result, i, verbose, show_traces)
-
-        # Carry forward updated blueprint
-        blueprint = new_blueprint
 
     # Deterministic evaluation (assertions are computed from each turn's `expect`)
     scenario_eval = evaluate_scenario(scenario["name"], turns_spec, results)

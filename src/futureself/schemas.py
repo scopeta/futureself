@@ -89,10 +89,12 @@ class ConversationTurn(BaseModel):
 
 
 class UserBlueprint(BaseModel):
-    """The user's persistent profile passed to the agent each turn.
+    """The user's durable, validated domain profile passed to the agent each turn.
 
-    The orchestrator is responsible for extracting facts and creating an
-    updated blueprint after each turn.
+    This is **domain state only** — the conversation transcript lives in its own
+    ``messages`` store (spec §11.1), not on the Blueprint. Blueprint fields change
+    only via validated paths (the ``/blueprint/*`` PATCH endpoints); nothing is
+    auto-inferred from model output.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -100,9 +102,9 @@ class UserBlueprint(BaseModel):
     bio: BioData = Field(default_factory=BioData)
     psych: PsychData = Field(default_factory=PsychData)
     context: ContextData = Field(default_factory=ContextData)
-    conversation_history: list[ConversationTurn] = Field(default_factory=list)
     inferred_facts: list[str] = Field(default_factory=list)
-    """Accumulated facts extracted across all previous turns."""
+    """Confirmed facts about the user. Populated **only** via a validated path
+    (no auto-inference from replies — that caused drift). Empty until then."""
 
     @classmethod
     def from_dict(cls, data: dict) -> "UserBlueprint":
@@ -153,7 +155,8 @@ class OrchestratorResult:
     """The synthesized reply in the Future Self persona, ready to show to the user."""
 
     updated_blueprint: UserBlueprint
-    """A new UserBlueprint with newly extracted facts merged into inferred_facts."""
+    """The user's Blueprint (domain state). Unchanged by a chat turn now — the
+    transcript is persisted separately and facts are no longer auto-inferred."""
 
     llm_traces: list[LLMCallTrace] = field(default_factory=list)
     """LLM call records for this turn (for eval and observability)."""

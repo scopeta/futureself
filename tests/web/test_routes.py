@@ -115,9 +115,13 @@ async def test_chat_send_agent_error_returns_503(mock_synthesize, client):
 
 
 @patch("futureself.web.routes.api.synthesize", new_callable=AsyncMock)
-async def test_chat_send_persists_turn(mock_synthesize, client):
-    # The reply is persisted as conversation history; facts are extracted from it.
-    mock_synthesize.return_value = "I'm 47 years old and still going strong."
+async def test_chat_send_persists_turn_to_messages(mock_synthesize, client, db):
+    # The exchange is appended to the messages store, NOT the Blueprint.
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from futureself.db.models import Message  # noqa: PLC0415
+
+    mock_synthesize.return_value = "Sleep more, my friend."
     token = await _create_session(client)
 
     await client.post(
@@ -126,15 +130,19 @@ async def test_chat_send_persists_turn(mock_synthesize, client):
         headers={"Authorization": f"Bearer {token}"},
     )
 
-    # Re-read the blueprint via the API to confirm persistence.
+    rows = (await db.scalars(select(Message).order_by(Message.id))).all()
+    assert [(m.role, m.content) for m in rows] == [
+        ("user", "I feel stuck"),
+        ("assistant", "Sleep more, my friend."),
+    ]
+
+    # The Blueprint is untouched by a chat turn (no auto-facts, no transcript).
     resp = await client.get(
         "/api/blueprint", headers={"Authorization": f"Bearer {token}"}
     )
     data = resp.json()
-    history = data["conversation_history"]
-    assert [t["role"] for t in history] == ["user", "assistant"]
-    assert history[0]["content"] == "I feel stuck"
-    assert any("47" in f for f in data["inferred_facts"])
+    assert data["inferred_facts"] == []
+    assert "conversation_history" not in data
 
 
 @patch("futureself.web.routes.api.synthesize", new_callable=AsyncMock)

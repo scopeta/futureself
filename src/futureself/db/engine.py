@@ -8,8 +8,8 @@ Usage in FastAPI:
         ...
 
 Environment variable:
-    DATABASE_URL — async PostgreSQL URL, e.g.:
-        postgresql+asyncpg://user:pass@host:5432/futureself
+    DATABASE_URL — async Azure SQL URL, e.g.:
+        mssql+aioodbc://user:pass@server.database.windows.net/futureself?driver=ODBC+Driver+18+for+SQL+Server&Encrypt=yes
 """
 from __future__ import annotations
 
@@ -28,8 +28,8 @@ def init_engine() -> None:
     url = os.getenv("DATABASE_URL", "")
     if not url:
         raise RuntimeError(
-            "DATABASE_URL is not set. "
-            "Example: postgresql+asyncpg://user:pass@host:5432/futureself"
+            "DATABASE_URL is not set. Example: mssql+aioodbc://user:pass@"
+            "server.database.windows.net/futureself?driver=ODBC+Driver+18+for+SQL+Server&Encrypt=yes"
         )
     _engine = create_async_engine(url, echo=False, pool_pre_ping=True)
     _session_factory = async_sessionmaker(

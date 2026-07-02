@@ -8,7 +8,6 @@ from futureself.schemas import (
     BioData,
     BiomarkerEntry,
     ContextData,
-    ConversationTurn,
     PsychData,
     UserBlueprint,
 )
@@ -24,8 +23,6 @@ def test_blank_blueprint_flags_all_missing():
     assert "bio.height_weight" in fields
     assert "context.location_country" in fields
     assert "psych.goals" in fields
-    # Blank blueprint has no conversation → "low" flag fires.
-    assert "conversation_history" in fields
 
 
 def test_score_decreases_with_missing_fields():
@@ -33,7 +30,6 @@ def test_score_decreases_with_missing_fields():
         bio=BioData(age=30, sex="F", height_cm=170, weight_kg=65),
         psych=PsychData(goals=["longevity"]),
         context=ContextData(location_country="SG", occupation="engineer"),
-        conversation_history=[ConversationTurn(role="user", content="hi")],
     )
     blank = UserBlueprint()
 

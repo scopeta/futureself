@@ -14,8 +14,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from futureself.db.models import Blueprint, Session, User
-from futureself.schemas import UserBlueprint
+from futureself.db.models import Blueprint, Message, Session, User
+from futureself.schemas import ConversationTurn, UserBlueprint
 
 
 # ---------------------------------------------------------------------------
@@ -150,3 +150,33 @@ async def save_blueprint_by_user_id(
         .values(data=blueprint.model_dump())
     )
     await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Conversation transcript (append-only ``messages`` table, decoupled from the
+# Blueprint). Isolated per user by the server-resolved user_id (auth invariant).
+# ---------------------------------------------------------------------------
+
+
+async def append_messages(
+    db: AsyncSession, user_id: uuid.UUID, turns: list[ConversationTurn]
+) -> None:
+    """Append conversation turns for a user (in order)."""
+    for turn in turns:
+        db.add(Message(user_id=user_id, role=turn.role, content=turn.content))
+    await db.commit()
+
+
+async def get_recent_messages(
+    db: AsyncSession, user_id: uuid.UUID, limit: int
+) -> list[ConversationTurn]:
+    """Return the user's most recent ``limit`` turns, oldest→newest."""
+    rows = (
+        await db.scalars(
+            select(Message)
+            .where(Message.user_id == user_id)
+            .order_by(Message.id.desc())
+            .limit(limit)
+        )
+    ).all()
+    return [ConversationTurn(role=r.role, content=r.content) for r in reversed(rows)]

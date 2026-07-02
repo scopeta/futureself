@@ -27,8 +27,8 @@ load_dotenv()
 
 from futureself import judge  # noqa: E402
 from futureself.eval import check_expectations  # noqa: E402
-from futureself.schemas import UserBlueprint  # noqa: E402
-from futureself.web.agent_client import apply_turn, synthesize  # noqa: E402
+from futureself.schemas import ConversationTurn, UserBlueprint  # noqa: E402
+from futureself.web.agent_client import synthesize  # noqa: E402
 
 SCENARIO_DIR = Path(__file__).parent.parent.parent / "scenarios"
 SCENARIO_FILES = sorted(SCENARIO_DIR.glob("*.yaml"))
@@ -46,10 +46,11 @@ async def test_scenario(scenario_path: Path) -> None:
     scenario = yaml.safe_load(scenario_path.read_text(encoding="utf-8"))
     blueprint = UserBlueprint.from_dict(scenario.get("user_blueprint", {}))
     rubric = judge.DEFAULT_RUBRIC + list(scenario.get("rubric", []))
+    recent_messages: list[ConversationTurn] = []
 
     for i, turn in enumerate(scenario.get("turns", []), start=1):
         user_msg = turn["user_message"].strip()
-        reply = await synthesize(blueprint, user_msg)
+        reply = await synthesize(blueprint, recent_messages, user_msg)
 
         # --- Hard gate: deterministic assertions ---
         assertions = check_expectations(reply, turn.get("expect"))
@@ -79,4 +80,10 @@ async def test_scenario(scenario_path: Path) -> None:
                 f"{verdict.overall_score} < floor {_JUDGE_FLOOR}: {verdict.rationale}"
             )
 
-        blueprint = apply_turn(blueprint, user_msg, reply)
+        recent_messages = (
+            recent_messages
+            + [
+                ConversationTurn(role="user", content=user_msg),
+                ConversationTurn(role="assistant", content=reply),
+            ]
+        )[-20:]

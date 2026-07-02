@@ -46,8 +46,7 @@ flowchart TD
     end
 
     Synthesize --> Reply(["User-Facing Reply"])
-    Reply -.-> Facts["extract_facts_simple (regex, no LLM call)"]
-    Facts -.-> Blueprint[("Updated Blueprint")]
+    Reply -.-> Messages[("Append to messages table")]
 ```
 
 **LLM calls per turn:** the model emits its `load_skill` tool calls in one completion (N = 0–3 domains, typically a single tool-call round), then synthesizes the reply in a second — so **~2 completions when skills load, 1 when none do**. Each tool-call round the model resumes from is an additional completion; the SkillsProvider *returning* a SKILL.md body is in-process and free, but the model consuming it is not. (Confirmed in production via App Insights: `chat` spans ≈ 2× `invoke_agent` spans.)
@@ -96,9 +95,9 @@ lives in `web/agent_client.py`:
    - LLM reads the turn context, decides which skills are relevant, calls `load_skill` for each.
    - SkillsProvider returns the full SKILL.md body (in-process, no LLM call) — but the model must resume to use it.
    - LLM synthesizes the Future Self reply in character (a second completion when skills were loaded).
-3. **Extract** new facts from the reply via `agent_client.extract_facts` (regex, no LLM call).
-4. **Append** the turn to conversation history and merge new facts into the
-   Blueprint (immutable `model_copy`) — `agent_client.apply_turn` — then persist.
+3. **Append** the user message and the reply to the `messages` store via
+   `session.append_messages`. **No fact extraction and no Blueprint write** — a
+   chat turn only extends the transcript (facts are validated-only, §11.1).
 
 Notes:
 - Fact extraction is synchronous and regex-based — no additional LLM cost.
@@ -115,12 +114,13 @@ All contracts live in `src/futureself/schemas.py`.
 
 Frozen Pydantic model (`frozen=True`). Immutable for all callers; the orchestrator returns an updated copy via `model_copy`.
 
-Top-level fields:
+Top-level fields (**domain state only** — the conversation transcript is a
+separate `messages` table, §11.1, not on the Blueprint):
 - `bio: BioData`
 - `psych: PsychData`
 - `context: ContextData`
-- `conversation_history: list[ConversationTurn]` — *current persistence: Postgres, owned by FutureSelf. **On Foundry Hosted Agents migration this field becomes a transient view of Foundry-managed thread memory** (see Section 11); the Blueprint domain object stays in Postgres.*
-- `inferred_facts: list[str]`
+- `inferred_facts: list[str]` — **confirmed-only.** Not auto-inferred from model
+  output (that caused drift); populated solely via validated paths, empty until then.
 
 Class method:
 - `from_dict(data: dict) -> UserBlueprint` — used by scenario test loader.
@@ -293,9 +293,9 @@ so unrelated code paths load without them.
 Must cover (`tests/web/test_agent_client.py`, `tests/web/test_routes.py`):
 - `chat_send` returns `{"reply": ...}` and persists the turn (history + facts).
 - Hosted agent error → BFF returns 503 (never a raw 500).
-- Blueprint immutability across `apply_turn`.
+- A chat turn appends to `messages` and does **not** write the Blueprint; `inferred_facts` stays empty (no auto-inference).
 - Conversation history appended with correct `ConversationTurn` objects.
-- `extract_facts`: age extraction, deduplication, empty reply.
+- `session.append_messages` / `get_recent_messages`: append + windowed last-N ordering, per-user isolation.
 - `build_user_context`: includes user message, facts, and history.
 - `synthesize`: calls the Responses endpoint with `store=False`, handles empty
   `output_text` gracefully.
@@ -320,7 +320,7 @@ monkeypatch.setattr(agent_client, "_client", lambda: fake)
 - Scenario files in `scenarios/*.yaml`. Each defines `name`, `user_blueprint`,
   `turns` (with `user_message` and an optional `expect` block), and an optional
   scenario-level `rubric` (extra judge criteria).
-- Multi-turn scenarios carry the Blueprint forward between turns via `agent_client.apply_turn`.
+- Multi-turn scenarios thread a local recent-turns list between turns (the BFF uses the `messages` table).
 - **Two evaluation tiers (run against real Claude):**
   - *Deterministic assertions* (`eval.check_expectations` vs the `expect` block):
     length bounds, `must_include_any` topical keywords, `forbidden` phrases
@@ -389,7 +389,7 @@ Prerequisite slice for productionizing Phase 6: every Blueprint row must be owne
 
 - **Identity provider:** Microsoft Entra ID (workforce tenant initially; multi-tenant External ID configuration deferred to Phase 7 if WhatsApp B2C onboarding requires it).
 - **Auth flow:** OIDC Authorization Code + PKCE from the React UI via MSAL.js. Backend validates Entra-issued JWTs (`iss`, `aud`, signature against tenant JWKS) on every protected request.
-- **User identifier:** the Entra `oid` claim (immutable, tenant-scoped) is the canonical user key. A `users` table in Postgres maps `oid → internal user_id (UUID)`; everything else (Blueprint, threads, supplement history) FKs to `user_id`.
+- **User identifier:** the Entra `oid` claim (immutable, tenant-scoped) is the canonical user key. A `users` table in Azure SQL maps `oid → internal user_id (UUID)`; everything else (Blueprint, messages, sessions) FKs to `user_id`.
 - **Onboarding:** first-login flow detects no Blueprint exists for the `oid`, walks the user through a minimum viable Blueprint capture (age, sex, location, top goals, top fears), persists, and routes to the chat surface.
 - **Authorization invariant (non-negotiable):** every database query that touches user data is filtered by the `user_id` derived from the validated token — never from a request body, query parameter, or client-supplied header. The orchestrator receives the resolved `user_id` from the auth middleware; it cannot be overridden by the caller.
 - **Foundry thread binding:** when Phase 11 (Hosted Agents) lands, the per-user Foundry thread ID stored on the `users` row inherits the same authorization rule.
@@ -427,24 +427,24 @@ The agent runs in **exactly one place**: the Foundry Hosted Agent container
 (`main.py`, an Azure AI Responses host) built via `orchestrator.build_agent`.
 The React BFF (`web/app.py` → `web/routes/api.py::chat_send`) no longer
 orchestrates in-process — it calls the deployed agent over HTTP through
-`web/agent_client.py` (`synthesize`) and remains the **system of record** for
-the Postgres-backed Blueprint (profile, facts, **and** conversation history).
+`web/agent_client.py` (`synthesize`) and remains the **system of record** in
+Azure SQL — the Blueprint (domain state) and the append-only `messages` transcript.
 
-Per-turn flow: `chat_send` resolves the user (auth invariant §6.5), calls
-`synthesize(blueprint, message)` — which renders the full context block
-(profile + known facts + recent history + message) and POSTs it to the agent's
-OpenAI-compatible Responses endpoint — then `apply_turn` appends the exchange
-and merges newly extracted facts, and the Blueprint is saved. There is no
-in-process `run_turn` and no model-fallback layer in the BFF anymore (the LLM
-call, retries, and skill loading all live inside the hosted agent). This is a
-**single-path** cutover: no feature flag.
+Per-turn flow: `chat_send` resolves the user (auth invariant §6.5), reads the
+last-N `messages`, calls `synthesize(blueprint, recent_messages, message)` — which
+renders a **bounded** context block (profile + known facts + last-N turns +
+message) and POSTs it to the agent's OpenAI-compatible Responses endpoint — then
+`append_messages` records the exchange. **The Blueprint is not written by a chat
+turn.** There is no in-process `run_turn` and no model-fallback layer in the BFF
+anymore (the LLM call, retries, and skill loading all live inside the hosted
+agent). This is a **single-path** cutover: no feature flag.
 
-**Why the BFF still owns conversation history (not Foundry).** The Foundry agent
-Responses endpoint is **stateless per external caller** — end-user conversation
-isolation isn't offered yet (a caller who knew another conversation id could read
-it), so the documented contract is "store conversation history in your client and
-send it as context." The BFF therefore sends `store=False` and the full context
-each turn, keeping Postgres as the durable, per-user-isolated store.
+**Why the BFF owns the transcript (not Foundry).** The Foundry agent Responses
+endpoint is **stateless per external caller** — end-user conversation isolation
+isn't offered yet (a caller who knew another conversation id could read it), so
+the documented contract is "store conversation history in your client and send it
+as context." The BFF therefore sends `store=False` and a bounded context each
+turn, keeping Azure SQL as the durable, per-user-isolated store (§11.1).
 
 **Auth.** The BFF authenticates to the agent with Microsoft Entra (Azure RBAC):
 `DefaultAzureCredential` (managed identity in prod, `az login` locally), scope
@@ -505,37 +505,44 @@ on `0.0.0.0:8088`. Deployment shape is declared in `agent.yaml`
 (`azd ai agent` manifest); replacing the current Container Apps deploy
 template is tracked separately.
 
-### 11.1 Conversation history stays in Postgres (stateless endpoint)
+### 11.1 Memory: transcript in a `messages` table, facts validated (Azure SQL)
 
-The original migration plan assumed Foundry would manage thread memory and
-`conversation_history` would become a read-through projection of a Foundry
-thread. **That is not how it shipped:** the agent Responses endpoint is
-stateless per external caller (§11.0), so the BFF remains the conversation
-store. Concretely:
+The store is **Azure SQL Database** (serverless free tier). Two memory tiers,
+deliberately separated:
 
-- **`conversation_history`** stays a first-class, durable field on `UserBlueprint`
-  in Postgres, appended each turn by `agent_client.apply_turn` (via `model_copy`).
-  It is sent to the agent as part of the per-turn context (last 10 turns).
-- **`bio`, `psych`, `context`, `inferred_facts`** likewise stay sovereign in
-  Postgres — domain state that survives across requests and channel switches
-  (web ↔ WhatsApp).
-- **`inferred_facts` extraction unchanged** in behaviour: `agent_client.extract_facts`
-  (moved out of the orchestrator) runs per turn and merges via `model_copy`.
-- **Channel binding:** a single Blueprint per user backs all channels; no Foundry
-  thread id is needed because Foundry holds no per-user conversation state.
+- **Durable domain memory = the Blueprint** (`bio`/`psych`/`context` +
+  `inferred_facts`), one JSON row per user in `blueprints`. Changed only via the
+  validated `/blueprint/*` PATCH endpoints. **Facts are no longer auto-inferred**
+  from replies — the old regex-over-the-reply path scraped the agent's first-person
+  roleplay and drove profile drift; it's removed. `inferred_facts` is confirmed-only.
+- **Short-term memory = the `messages` table** — append-only transcript
+  (`id` autoincrement, `user_id` FK, `role`, `content`, `created_at`), decoupled
+  from the Blueprint. Per turn, `chat_send` reads the last N turns
+  (`FUTURESELF_HISTORY_WINDOW`, default 10) via `session.get_recent_messages` and
+  appends the exchange via `session.append_messages`. **A chat turn never writes
+  the Blueprint.** Per-turn context is therefore bounded (profile + capped facts +
+  last-N turns), not the unbounded full-blueprint dump it was before.
+- **Isolation:** the `messages` table is keyed by the server-resolved `user_id`
+  (auth invariant §6.5); one Blueprint + transcript per user backs all channels.
 
-If/when Foundry offers per-end-user conversation isolation, history *could* move
-to server-managed threads (`store=True` + `previous_response_id`), but there is
-no need to until then.
+**Why not Foundry-managed memory?** Two mechanisms, both rejected for now:
+(1) the Responses conversation store is stateless with no per-user isolation on
+the agent endpoint (§11.0); (2) Foundry **Agent Memory** (Cosmos-backed,
+user-scoped) is `preview`, requires Foundry-hosted chat+embedding model
+deployments (we're Anthropic-direct), attaches to prompt-agents not our hosted
+agent, stores *semantic* memory (not a raw transcript), and defaults to
+*auto-extraction* — reintroducing the drift we removed. **Revisit trigger:** GA +
+a need for semantic long-term recall + willingness to run a Foundry embedding
+model. Seam: `x-memory-user-id = user_id` + the Memory Store API.
 
 ### 11.2 Test impact
 - Unit tests mock `web.agent_client.synthesize` (an `AsyncMock` returning the
-  reply string) — see `tests/web/test_routes.py`. The turn-assembly helpers
-  (`build_user_context`, `extract_facts`, `apply_turn`, `synthesize`) are tested
-  directly in `tests/web/test_agent_client.py`.
+  reply string) — see `tests/web/test_routes.py`. The context helper
+  (`build_user_context`) and `synthesize` are tested in
+  `tests/web/test_agent_client.py`; the `messages` store in `tests/web/test_session.py`.
+- Tests run on **SQLite** (dialect-agnostic models); no ODBC driver needed in CI.
 - Live multi-turn scenarios (`tests/scenarios/`) call the real `synthesize`
-  against the deployed agent (needs `FOUNDRY_AGENT_ENDPOINT` + Azure auth) and
-  thread state locally via `apply_turn`.
+  against the deployed agent and thread a local recent-turns list.
 
 ### 11.3 What does *not* change
 - Single-agent rule (Section 2).
@@ -553,10 +560,10 @@ topology, so it happens once (see Phase 6.5 sequencing):
 - **Backend:** set `ENTRA_TENANT_ID` + `ENTRA_CLIENT_ID` on the BFF to flip the
   already-shipped JWT-validation path from anonymous to required (§6.5).
 - **No per-user thread binding needed:** conversation state lives in the
-  Postgres Blueprint keyed by the server-resolved `user_id` (§11.1), so the
+  `messages` table keyed by the server-resolved `user_id` (§11.1), so the
   `oid → user_id` resolution from §6.5 already isolates each user's history.
-  Should Foundry-managed threads ever be adopted, the thread id would bind to
-  the `users` row and the authorization invariant would extend to it.
+  Should Foundry-managed threads/memory ever be adopted, the thread id would bind
+  to the `users` row and the authorization invariant would extend to it.
 
 ---
 
@@ -565,13 +572,13 @@ topology, so it happens once (see Phase 6.5 sequencing):
 A rebuild from scratch is valid only if all are true:
 
 1. **The turn flow in Section 4 holds:** the BFF (`agent_client.synthesize` +
-   `apply_turn`) calls the hosted agent and persists; the agent is built by the
-   single `build_agent`.
+   `session.append_messages`) calls the hosted agent and appends to the transcript;
+   the agent is built by the single `build_agent`.
 2. **All domain expertise is delivered via SKILL.md files following Section 7 conventions.**
 3. **`web.agent_client.synthesize` is mockable so route tests need no Azure credentials.**
-4. **Blueprint immutability is enforced: `apply_turn` uses `model_copy`, never mutates.**
+4. **Blueprint immutability is enforced: mutations use `model_copy`, never in place; a chat turn never writes the Blueprint.**
 5. **The BFF never returns a raw 500 — a hosted-agent failure degrades to a 503.**
 6. **Empty model replies do not crash a turn.**
 7. **Tests from Section 9 are present and passing.**
-8. **Persistence boundaries follow Section 11.1: Blueprint domain fields in Postgres, `conversation_history` deferred to Foundry-managed thread memory once Hosted Agents migration is active.**
+8. **Persistence boundaries follow Section 11.1: Blueprint (domain state) and the append-only `messages` transcript both in Azure SQL; facts are validated-only (no auto-inference); Foundry-managed memory is deferred.**
 9. **Per-user authorization invariant (Phase 6.5): every user-data query is filtered by a `user_id` resolved from a validated Entra ID token, never from client-supplied input. Cross-tenant access denial test is present and passing.**

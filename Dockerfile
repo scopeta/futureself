@@ -34,6 +34,20 @@ FROM python:3.13-slim
 
 WORKDIR /app
 
+# Microsoft ODBC Driver 18 — required by the async Azure SQL driver (aioodbc).
+# Tests run on SQLite and never need this; only the deployed BFF connects to Azure SQL.
+# The MS package feed is selected by the base image's Debian version ($VERSION_ID),
+# so this works whether python:3.13-slim is Debian 12 (bookworm) or 13 (trixie).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates gnupg \
+    && . /etc/os-release \
+    && curl -sSL -o /tmp/ms-prod.deb "https://packages.microsoft.com/config/debian/${VERSION_ID}/packages-microsoft-prod.deb" \
+    && dpkg -i /tmp/ms-prod.deb && rm /tmp/ms-prod.deb \
+    && apt-get update \
+    && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql18 unixodbc \
+    && apt-get purge -y curl gnupg && apt-get autoremove -y \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
 COPY --from=builder /app/.venv .venv
 COPY --from=frontend-builder /frontend/dist frontend/dist
 

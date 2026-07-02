@@ -14,16 +14,19 @@ from futureself.schemas import (
     BioData,
     BiomarkerEntry,
     ContextData,
+    ConversationTurn,
     PsychData,
     Supplement,
     UserBlueprint,
 )
-from futureself.web.agent_client import apply_turn, synthesize
+from futureself.web.agent_client import _HISTORY_WINDOW, synthesize
 from futureself.web.auth import AuthError, auth_enabled, bearer_token, validate_token
 from futureself.web.session import (
+    append_messages,
     create_session,
     get_blueprint_by_user_id,
     get_or_create_user_by_oid,
+    get_recent_messages,
     get_user_id_from_token,
     save_blueprint_by_user_id,
 )
@@ -94,14 +97,15 @@ class ChatRequest(BaseModel):
 async def chat_send(body: ChatRequest, request: Request, db: DB) -> dict:
     """Process a user message and return the Future Self reply.
 
-    Delegates synthesis to the deployed Foundry hosted agent (spec §11) and
-    persists the turn (conversation history + extracted facts) to Postgres,
-    which remains the system of record. Requires ``Authorization: Bearer
-    <token>`` header.
+    Delegates synthesis to the deployed Foundry hosted agent (spec §11) with a
+    bounded recent-turns window, then appends the exchange to the ``messages``
+    store. The Blueprint (domain state) is **not** written by a chat turn.
+    Requires ``Authorization: Bearer <token>`` header.
     """
     user_id, blueprint = await _require_identity(request, db)
+    recent = await get_recent_messages(db, user_id, _HISTORY_WINDOW)
     try:
-        reply = await synthesize(blueprint, body.message)
+        reply = await synthesize(blueprint, recent, body.message)
     except Exception:
         # The hosted agent / LLM provider can return transient errors (overload,
         # timeouts) or the endpoint may be briefly unreachable. Don't surface a
@@ -112,7 +116,14 @@ async def chat_send(body: ChatRequest, request: Request, db: DB) -> dict:
             detail="I'm having trouble gathering my thoughts right now — give me a moment and try again.",
         ) from None
 
-    await save_blueprint_by_user_id(user_id, apply_turn(blueprint, body.message, reply), db)
+    await append_messages(
+        db,
+        user_id,
+        [
+            ConversationTurn(role="user", content=body.message),
+            ConversationTurn(role="assistant", content=reply),
+        ],
+    )
     return {"reply": reply}
 
 

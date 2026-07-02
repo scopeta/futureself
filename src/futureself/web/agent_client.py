@@ -18,13 +18,16 @@ resource. No API key path is supported by the endpoint.
 from __future__ import annotations
 
 import os
-import re
 from functools import lru_cache
 
 from futureself.schemas import ConversationTurn, UserBlueprint
 
 # Entra scope for the Foundry data plane (services.ai.azure.com).
 _SCOPE = "https://ai.azure.com/.default"
+
+# Recent-turns window sent to the (stateless) agent each turn. Bounds per-turn
+# tokens; the full transcript stays in the ``messages`` store.
+_HISTORY_WINDOW = int(os.getenv("FUTURESELF_HISTORY_WINDOW", "10"))
 
 
 @lru_cache(maxsize=1)
@@ -62,16 +65,18 @@ def _client() -> object:
     )
 
 
-def build_user_context(blueprint: UserBlueprint, user_message: str) -> str:
+def build_user_context(
+    blueprint: UserBlueprint,
+    recent_messages: list[ConversationTurn],
+    user_message: str,
+) -> str:
     """Render the per-turn context block sent to the (stateless) hosted agent.
 
-    Includes the profile, known facts, and recent conversation history so the
-    agent has everything it needs in a single request.
+    Bounded and non-redundant: the profile is durable domain state only (the
+    transcript is **not** dumped inside it), known facts render once, and the
+    recent-turns window is supplied by the caller from the ``messages`` store.
     """
-    history_lines = [
-        f"{turn.role.upper()}: {turn.content}"
-        for turn in blueprint.conversation_history[-10:]
-    ]
+    history_lines = [f"{turn.role.upper()}: {turn.content}" for turn in recent_messages]
 
     facts_section = (
         "\n\nKNOWN FACTS ABOUT USER:\n" + "\n".join(f"- {f}" for f in blueprint.inferred_facts)
@@ -92,56 +97,20 @@ def build_user_context(blueprint: UserBlueprint, user_message: str) -> str:
     )
 
 
-def extract_facts(reply: str, blueprint: UserBlueprint) -> list[str]:
-    """Extract new facts from the reply without an LLM call.
-
-    Looks for common patterns: age mentions, location. Returns only facts not
-    already present in the blueprint.
-    """
-    existing = set(blueprint.inferred_facts)
-    candidates: list[str] = []
-
-    for m in re.finditer(r"\bI(?:'m| am) (\d{2,3})(?: years? old)?\b", reply, re.I):
-        candidates.append(f"User is {m.group(1)} years old")
-
-    for m in re.finditer(r"\b(?:I live|based|living) in ([A-Z][a-zA-Z\s,]+?)(?:\.|,|\n|$)", reply):
-        candidates.append(f"User lives in {m.group(1).strip()}")
-
-    return [f for f in candidates if f not in existing]
-
-
-def apply_turn(
-    blueprint: UserBlueprint, user_message: str, reply: str
-) -> UserBlueprint:
-    """Return a new Blueprint with the turn appended and new facts merged.
-
-    Pure (no I/O); the orchestrator/immutability rule holds via ``model_copy``.
-    Shared by the BFF chat route and the live scenario harness so the per-turn
-    update logic lives in exactly one place.
-    """
-    new_facts = extract_facts(reply, blueprint)
-    return blueprint.model_copy(
-        update={
-            "inferred_facts": list(blueprint.inferred_facts) + new_facts,
-            "conversation_history": list(blueprint.conversation_history)
-            + [
-                ConversationTurn(role="user", content=user_message),
-                ConversationTurn(role="assistant", content=reply),
-            ],
-        }
-    )
-
-
-async def synthesize(blueprint: UserBlueprint, user_message: str) -> str:
+async def synthesize(
+    blueprint: UserBlueprint,
+    recent_messages: list[ConversationTurn],
+    user_message: str,
+) -> str:
     """Run one turn against the hosted agent and return the reply text.
 
-    Builds the full context block, calls the stateless Responses endpoint, and
+    Builds the bounded context block, calls the stateless Responses endpoint, and
     returns ``output_text``. Raises on transport/API errors — the caller maps
     them to a retryable 503.
     """
     client = _client()
     response = await client.responses.create(
-        input=build_user_context(blueprint, user_message),
+        input=build_user_context(blueprint, recent_messages, user_message),
         store=False,  # stateless endpoint; the BFF owns conversation history
     )
     return response.output_text or ""

@@ -143,10 +143,23 @@ calls it **over HTTP** and becomes a thin client + system-of-record.
   in-process model-fallback was dropped (now relying on SDK/agent retries).
 - **An honest reversal worth mentioning:** the original plan assumed Foundry would
   manage thread memory; the endpoint turned out stateless per caller, so
-  **Postgres stayed the system of record.** Adapting the design to platform
+  **our own database stayed the system of record.** Adapting the design to platform
   reality — rather than forcing the plan — is itself a decision.
+- **Foundry Memory re-evaluated (and deferred):** Foundry later shipped a
+  user-scoped Agent Memory (Cosmos-backed). We looked and passed — it's `preview`,
+  needs Foundry-hosted chat+embedding models (we're Anthropic-direct), attaches to
+  prompt-agents not our hosted agent, and its default auto-extraction is the same
+  drift we were removing. It's a documented GA-revisit, not a now (spec §11.1).
 
-### 2.4 Cross-cutting principles
+### 2.4 Two memory tiers (design consequence)
+The split falls out of the above: **durable domain memory** is the Blueprint
+(`bio`/`psych`/`context` + confirmed `inferred_facts`) in Azure SQL, written only
+via validated paths; **short-term memory** is the `messages` transcript, a bounded
+last-N window sent per turn. Nothing is auto-inferred from replies — a chat turn
+appends to `messages` and never mutates the Blueprint. This is why fact *drift* is
+structurally impossible now, and why per-turn cost is bounded.
+
+### 2.5 Cross-cutting principles
 - **Immutability** (`model_copy`, never in place) → predictable state, trivial to
   test, no action-at-a-distance bugs.
 - **Never crash a turn** → malformed/empty output degrades to safe defaults; a
@@ -170,7 +183,7 @@ flowchart TD
     subgraph Backend["FastAPI BFF — web/app.py"]
         Routes["routes/api.py<br/>/api/* endpoints"]
         SessionMod["session.py<br/>Bearer token to user"]
-        Client["web/agent_client.py<br/>synthesize + apply_turn"]
+        Client["web/agent_client.py<br/>synthesize (bounded context)"]
     end
 
     subgraph FoundryAgent["Foundry Hosted Agent — main.py"]
@@ -181,11 +194,11 @@ flowchart TD
     end
 
     Claude["Claude — AnthropicClient<br/>1 turn = 1-2 completions"]
-    DB[("PostgreSQL<br/>users / blueprints / sessions")]
+    DB[("Azure SQL<br/>users / blueprints / sessions / messages")]
 
     UI -->|"Bearer token + JSON"| Routes
     Routes --> SessionMod
-    SessionMod <-->|"load / save Blueprint"| DB
+    SessionMod <-->|"blueprint + messages"| DB
     Routes --> Client
     Client -->|"HTTPS Responses<br/>Entra auth, full context"| Host
     Host --> Builder --> Agent
@@ -197,10 +210,10 @@ flowchart TD
 
 **One agent, called over HTTP.** The agent runs in exactly one place — the
 Foundry Hosted Agent (`main.py`), built by the single `orchestrator.build_agent`.
-The BFF no longer runs it in-process: `web/agent_client.py` sends the full
+The BFF no longer runs it in-process: `web/agent_client.py` sends a **bounded**
 per-turn context to the agent's **stateless** Responses endpoint (Microsoft
-Entra auth) and keeps Postgres as the system of record for the Blueprint —
-including conversation history. See
+Entra auth) and keeps Azure SQL as the system of record — the Blueprint (domain
+state) and the append-only `messages` transcript. See
 [`futureself-spec.md` §11](./futureself-spec.md).
 
 ---
@@ -214,26 +227,25 @@ sequenceDiagram
     actor U as User SPA
     participant API as routes/api.py
     participant S as session.py
-    participant DB as PostgreSQL
+    participant DB as Azure SQL
     participant CL as agent_client
     participant H as Hosted Agent (main.py)
     participant C as Claude
 
     U->>API: POST /api/chat/send (Bearer token, message)
-    API->>S: resolve token to user_id + Blueprint
-    S->>DB: SELECT blueprint by session token
-    DB-->>S: UserBlueprint (JSON)
-    S-->>API: UserBlueprint
-    API->>CL: synthesize(blueprint, message)
-    CL->>CL: build per-turn context (profile + facts + history + message)
+    API->>S: resolve token to user_id + Blueprint + recent messages
+    S->>DB: SELECT blueprint + last N messages
+    DB-->>S: Blueprint (JSON) + recent turns
+    S-->>API: blueprint, recent_messages
+    API->>CL: synthesize(blueprint, recent_messages, message)
+    CL->>CL: build bounded context (profile + facts + last-N turns + message)
     CL->>H: POST /responses (Entra auth, store=false)
     H->>C: agent.run → load_skill(s) + single synthesis completion
     C-->>H: Future Self reply
     H-->>CL: response.output_text
     CL-->>API: reply
-    API->>API: apply_turn → extract facts (regex) + model_copy Blueprint
-    API->>S: save updated Blueprint
-    S->>DB: UPDATE blueprints.data
+    API->>S: append_messages([user, assistant])
+    S->>DB: INSERT into messages (Blueprint untouched)
     API-->>U: reply JSON
 ```
 
@@ -244,13 +256,16 @@ Key invariants enforced here:
   completions** (one to request the skill(s), one to synthesize), one that loads
   none costs 1. Still a single agent — no fan-out, no critique rounds. (Verified
   in prod via App Insights: `chat` spans ≈ 2× `invoke_agent` spans.)
-- **Immutability.** `apply_turn` returns a *new* Blueprint via `model_copy`; it
-  never mutates the input.
+- **Bounded context.** Only the last N turns (`FUTURESELF_HISTORY_WINDOW`, default
+  10) are sent, and the profile carries no transcript — per-turn tokens stay
+  constant instead of growing with the conversation.
+- **Domain state is validated-only.** A chat turn appends to `messages` and never
+  writes the Blueprint. Blueprint fields change only via the `/blueprint/*` PATCH
+  endpoints; nothing is auto-inferred from model output.
 - **Graceful degradation.** An empty model reply yields an empty `reply` rather
   than crashing; a hosted-agent failure returns a retryable **503**, never a raw 500.
-- **Stateless agent, durable Postgres.** The agent endpoint stores nothing per
-  caller (`store=false`); the BFF sends the full context each turn and owns the
-  conversation history.
+- **Stateless agent, durable Azure SQL.** The agent endpoint stores nothing per
+  caller (`store=false`); the BFF owns the transcript in the `messages` table.
 
 ---
 
@@ -290,21 +305,23 @@ The six skills (each `src/futureself/skills/<name>/SKILL.md`):
 
 ## 6. Data model
 
-### 6.1 Persistence (PostgreSQL)
+### 6.1 Persistence (Azure SQL Database)
 
 ```mermaid
 erDiagram
     users ||--|| blueprints : has
     users ||--o{ sessions : has
+    users ||--o{ messages : has
 
     users {
         uuid id PK
+        string oid "Entra oid, unique"
         datetime created_at
     }
     blueprints {
         uuid id PK
         uuid user_id FK
-        json data "full UserBlueprint, JSONB"
+        json data "UserBlueprint domain state (no transcript)"
         datetime updated_at
     }
     sessions {
@@ -313,22 +330,32 @@ erDiagram
         string thread_id "reserved for Foundry Agent Service"
         datetime created_at
     }
+    messages {
+        int id PK "autoincrement, monotonic"
+        uuid user_id FK
+        string role
+        string content
+        datetime created_at
+    }
 ```
 
 A session **Bearer token** maps to a user; each user has one `blueprints` row
-whose `data` column stores the entire `UserBlueprint` serialized as JSON(B).
-Schema is managed by Alembic (`alembic/versions/`).
+(domain state as JSON) and an append-only `messages` transcript. "Last N turns"
+is `WHERE user_id = ? ORDER BY id DESC LIMIT N`. Schema is managed by Alembic
+(`alembic/versions/`); dialect-agnostic types run on Azure SQL in prod and SQLite
+in tests.
 
 ### 6.2 Domain object (`UserBlueprint`, in `schemas.py`)
 
-The Blueprint is a frozen Pydantic model — the user's evolving profile:
+The Blueprint is a frozen Pydantic model — the user's **durable, validated**
+domain profile (the transcript lives in the `messages` table, not here):
 
 - **`bio`** — age, sex, height/weight, conditions, medications, supplements,
   biomarker history, exam records.
 - **`psych`** — goals, fears, stress level, mental-health flags.
 - **`context`** — location, occupation, income, family, lifestyle notes.
-- **`conversation_history`** — list of `{role, content}` turns.
-- **`inferred_facts`** — facts extracted from replies (regex, no LLM).
+- **`inferred_facts`** — **confirmed-only** facts. Not auto-inferred from replies
+  (that caused drift); empty until a validated writer exists.
 
 Other contracts: `OrchestratorResult` (reply + updated Blueprint + traces) and
 `LLMCallTrace` (per-turn task/model/latency). Full field-level detail is in
@@ -360,6 +387,10 @@ flowchart TD
   - **Hosted agent** → `Dockerfile.agent` → **Foundry Hosted Agent** (deployed via
     `azd`). **Scales to zero** when idle (cold start adds seconds on the first call
     after idle). Trace role: `agentsv2`.
+- **Database:** **Azure SQL Database** (serverless free tier) — the BFF's `DATABASE_URL`.
+  The BFF image bundles the Microsoft ODBC driver (`msodbcsql18`) for the async
+  `mssql+aioodbc` driver; migrations run on startup (`alembic upgrade head`). The
+  agent has no database.
 - **Observability:** both processes emit OpenTelemetry → the same Application
   Insights (`futureself-insights`); one chat turn shows as two correlated
   transactions (BFF request + agent run). Enabled when
@@ -375,9 +406,9 @@ flowchart TD
 | `frontend/` | React + Vite + Tailwind SPA. `lib/api.ts` calls the BFF; chat + Blueprint pages. |
 | `src/futureself/web/app.py` | FastAPI factory: CORS, router mount, OTel, serves built SPA. |
 | `src/futureself/web/routes/api.py` | JSON REST endpoints (session, chat, blueprint, quality). |
-| `src/futureself/web/session.py` | Bearer-token sessions backed by Postgres. |
+| `src/futureself/web/session.py` | Bearer-token sessions + the `messages` transcript store, backed by Azure SQL. |
 | `src/futureself/orchestrator.py` | `build_agent` — the single agent builder (run by the hosted agent). |
-| `src/futureself/web/agent_client.py` | BFF→hosted-agent client: `synthesize`, context build, fact extraction, `apply_turn`. |
+| `src/futureself/web/agent_client.py` | BFF→hosted-agent client: `synthesize` + bounded `build_user_context`. |
 | `src/futureself/schemas.py` | Pydantic data contracts (`UserBlueprint`, results, traces). |
 | `src/futureself/skills/<name>/SKILL.md` | The six domain skills. |
 | `src/futureself/blueprint_quality.py` | Rule-based Blueprint data-quality report (no LLM). |
@@ -419,11 +450,11 @@ first; it documents which vars belong to which process.
 1. **Agent:** set `ANTHROPIC_API_KEY` + `FUTURESELF_MODEL`, then run the hosted
    agent locally: `python main.py` (Responses host on `:8088`).
 2. **BFF:** point `FOUNDRY_AGENT_ENDPOINT` at the agent (local `:8088` or the
-   deployed endpoint), set `DATABASE_URL` (Postgres), and ensure Azure auth
-   (`az login`) when targeting the deployed agent.
+   deployed endpoint), set `DATABASE_URL` (Azure SQL; local dev can point at any
+   SQLAlchemy-supported DB), and ensure Azure auth (`az login`) for the agent.
 3. Install deps with `uv sync --prerelease=allow` (the Foundry hosting SDK is
    beta — see `AGENTS.md` → Hosting SDK).
-4. Apply migrations (`alembic upgrade head`) against your Postgres.
+4. Apply migrations (`alembic upgrade head`) against your Azure SQL database.
 5. Backend: `uvicorn futureself.web.app:app --reload`.
 6. Frontend: `cd frontend && bun install && bun run dev` (set `VITE_API_URL` to
    the backend origin).

@@ -78,10 +78,6 @@ def check_quality(blueprint: UserBlueprint) -> QualityReport:
                 message=f"{entry.marker} was last measured {age_days // 30} months ago — consider retesting.",
             ))
 
-    # --- Conversation history ---
-    if len(blueprint.conversation_history) == 0:
-        flags.append(QualityFlag(field="conversation_history", severity="low", message="No conversation history yet — the agent will start fresh."))
-
     # Score: start at 100, deduct per flag
     deductions = {"missing": 15, "stale": 5, "low": 3}
     score = max(0, 100 - sum(deductions[f.severity] for f in flags))
