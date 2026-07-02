@@ -103,27 +103,27 @@ async def chat_send(body: ChatRequest, request: Request, db: DB) -> dict:
     Requires ``Authorization: Bearer <token>`` header.
     """
     user_id, blueprint = await _require_identity(request, db)
-    recent = await get_recent_messages(db, user_id, _HISTORY_WINDOW)
     try:
+        recent = await get_recent_messages(db, user_id, _HISTORY_WINDOW)
         reply = await synthesize(blueprint, recent, body.message)
+        await append_messages(
+            db,
+            user_id,
+            [
+                ConversationTurn(role="user", content=body.message),
+                ConversationTurn(role="assistant", content=reply),
+            ],
+        )
     except Exception:
-        # The hosted agent / LLM provider can return transient errors (overload,
-        # timeouts) or the endpoint may be briefly unreachable. Don't surface a
-        # raw 500 — log the full traceback and return a retryable 503.
-        logger.exception("hosted agent synthesis failed for chat/send")
+        # Transient failures — hosted-agent overload/timeout, or the serverless
+        # Azure SQL DB resuming from auto-pause (error 40613). Don't surface a raw
+        # 500; log the traceback and return a retryable 503. (401s from
+        # _require_identity are raised above and unaffected.)
+        logger.exception("chat/send failed")
         raise HTTPException(
             status_code=503,
             detail="I'm having trouble gathering my thoughts right now — give me a moment and try again.",
         ) from None
-
-    await append_messages(
-        db,
-        user_id,
-        [
-            ConversationTurn(role="user", content=body.message),
-            ConversationTurn(role="assistant", content=reply),
-        ],
-    )
     return {"reply": reply}
 
 
