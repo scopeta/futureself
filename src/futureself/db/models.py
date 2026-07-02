@@ -22,6 +22,7 @@ from sqlalchemy import (
     String,
     Text,
     Uuid,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -46,12 +47,18 @@ class User(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    oid: Mapped[str | None] = mapped_column(
-        String(64), unique=True, nullable=True, index=True
-    )
+    oid: Mapped[str | None] = mapped_column(String(64), nullable=True)
     """Entra ID `oid` claim (immutable per-user key). NULL for anonymous users."""
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, nullable=False
+    )
+
+    # Unique on oid, but only for non-NULL values: SQL Server rejects multiple
+    # NULLs in a plain UNIQUE index (unlike Postgres/SQLite), and anonymous users
+    # all have oid=NULL. The mssql_where filter is ignored on other dialects,
+    # which already treat NULLs as distinct.
+    __table_args__ = (
+        Index("ix_users_oid", "oid", unique=True, mssql_where=text("oid IS NOT NULL")),
     )
 
     blueprint: Mapped["Blueprint"] = relationship(
