@@ -44,8 +44,10 @@ RUN apt-get update \
     && curl -sSL -o /tmp/ms-prod.deb "https://packages.microsoft.com/config/debian/${VERSION_ID}/packages-microsoft-prod.deb" \
     && dpkg -i /tmp/ms-prod.deb && rm /tmp/ms-prod.deb \
     && apt-get update \
-    && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql18 unixodbc \
-    && apt-get purge -y curl gnupg && apt-get autoremove -y \
+    # libgssapi-krb5-2 is a msodbcsql18 dependency (Kerberos/GSSAPI) that
+    # --no-install-recommends skips; without it the driver fails to dlopen.
+    && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql18 unixodbc libgssapi-krb5-2 \
+    && apt-get purge -y curl gnupg \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/.venv .venv

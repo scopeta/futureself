@@ -55,9 +55,15 @@ async def _lifespan(app: FastAPI):  # noqa: ANN201, ARG001
     failure fails startup fast rather than serving on a bad schema.
     """
     if os.getenv("DATABASE_URL"):
-        logger.info("Applying database migrations (alembic upgrade head)...")
-        await asyncio.to_thread(_run_migrations)
-        logger.info("Database migrations applied.")
+        print("[startup] applying database migrations (alembic upgrade head)...", flush=True)
+        try:
+            await asyncio.to_thread(_run_migrations)
+        except Exception:
+            import traceback  # noqa: PLC0415
+            print("[startup] MIGRATION FAILED:", flush=True)
+            traceback.print_exc()
+            raise
+        print("[startup] database migrations applied.", flush=True)
     yield
 
 

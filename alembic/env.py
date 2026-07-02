@@ -9,7 +9,7 @@ import os
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import create_engine, pool
 
 from futureself.db.models import Base
 
@@ -48,12 +48,9 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    cfg = config.get_section(config.config_ini_section, {})
-    cfg["sqlalchemy.url"] = _sync_url()
-    connectable = engine_from_config(
-        cfg,
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
+    # 30s login timeout so a broken connection errors fast instead of hanging.
+    connectable = create_engine(
+        _sync_url(), poolclass=pool.NullPool, connect_args={"timeout": 30}
     )
     with connectable.connect() as connection:
         context.configure(connection=connection, target_metadata=target_metadata)

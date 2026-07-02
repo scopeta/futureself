@@ -31,7 +31,11 @@ def init_engine() -> None:
             "DATABASE_URL is not set. Example: mssql+aioodbc://user:pass@"
             "server.database.windows.net/futureself?driver=ODBC+Driver+18+for+SQL+Server&Encrypt=yes"
         )
-    _engine = create_async_engine(url, echo=False, pool_pre_ping=True)
+    # connect_args timeout → pyodbc login timeout (fail fast instead of hanging
+    # if Azure SQL is unreachable); harmless for SQLite.
+    _engine = create_async_engine(
+        url, echo=False, pool_pre_ping=True, connect_args={"timeout": 30}
+    )
     _session_factory = async_sessionmaker(
         _engine, expire_on_commit=False, class_=AsyncSession
     )

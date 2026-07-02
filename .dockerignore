@@ -10,3 +10,6 @@ scenarios/
 infra/
 *.md
 !prompts/*.md
+**/node_modules/
+frontend/dist/
+.claude/
