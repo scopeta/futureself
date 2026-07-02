@@ -8,10 +8,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy.exc import DBAPIError
 
 from futureself.web.routes.api import router as api_router
 
@@ -70,6 +71,17 @@ async def _lifespan(app: FastAPI):  # noqa: ANN201, ARG001
 def create_app() -> FastAPI:
     """Build and configure the FastAPI application."""
     application = FastAPI(title="FutureSelf", lifespan=_lifespan)
+
+    # Serverless Azure SQL auto-pauses when idle; the first request after a pause
+    # hits a transient resume error (40613) surfaced as a DBAPIError. Map any DB
+    # error to a retryable 503 app-wide so no endpoint returns a raw 500.
+    @application.exception_handler(DBAPIError)
+    async def _db_error_handler(request: Request, exc: DBAPIError) -> JSONResponse:  # noqa: ANN202, ARG001
+        logger.warning("DB error → 503 (likely serverless resume): %s", exc.__class__.__name__)
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Service is warming up — please retry in a moment."},
+        )
 
     # Initialise database engine — DATABASE_URL is required in production.
     from futureself.db.engine import init_engine  # noqa: PLC0415
