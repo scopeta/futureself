@@ -105,6 +105,8 @@ class UserBlueprint(BaseModel):
     inferred_facts: list[str] = Field(default_factory=list)
     """Confirmed facts about the user. Populated **only** via a validated path
     (no auto-inference from replies — that caused drift). Empty until then."""
+    onboarded: bool = False
+    """True once the user completes the onboarding flow. Reset by 'delete all data'."""
 
     @classmethod
     def from_dict(cls, data: dict) -> "UserBlueprint":

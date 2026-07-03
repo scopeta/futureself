@@ -33,6 +33,80 @@ export async function createSession(): Promise<void> {
   localStorage.setItem('fs_session', data.session_token);
 }
 
+function storeToken(data: { session_token: string }): void {
+  localStorage.setItem('fs_session', data.session_token);
+}
+
+/** Register a new email/password account and persist the session token. */
+export async function register(email: string, password: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+  if (res.status === 409) throw new Error('An account with this email already exists.');
+  if (res.status === 422)
+    throw new Error('Enter a valid email and a password of at least 8 characters.');
+  if (!res.ok) throw new Error('Could not create your account. Please try again.');
+  storeToken(await res.json());
+}
+
+/** Log in with email/password and persist the session token. */
+export async function login(email: string, password: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+  if (res.status === 401) throw new Error('Invalid email or password.');
+  if (!res.ok) throw new Error('Could not sign you in. Please try again.');
+  storeToken(await res.json());
+}
+
+/** Invalidate the session server-side (best-effort) and clear it locally. */
+export async function logout(): Promise<void> {
+  try {
+    await fetch(`${API_BASE}/api/auth/logout`, { method: 'POST', headers: authHeader() });
+  } catch {
+    /* best-effort */
+  } finally {
+    clearSession();
+  }
+}
+
+/** Mark the current user's onboarding as complete. */
+export async function completeOnboarding(): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/onboarding/complete`, {
+    method: 'POST',
+    headers: authHeader(),
+  });
+  if (!res.ok) throw new Error('Failed to finish onboarding');
+}
+
+/** Delete all of the user's data (blueprint + conversation) and reset onboarding. */
+export async function resetAllData(): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/account/reset`, {
+    method: 'POST',
+    headers: authHeader(),
+  });
+  if (!res.ok) throw new Error('Failed to reset your data');
+}
+
+/** Patch the bio section of the blueprint (age, sex, height, weight). */
+export async function patchBio(bio: {
+  age?: number | null;
+  sex?: string | null;
+  height_cm?: number | null;
+  weight_kg?: number | null;
+}): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/blueprint/bio`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...authHeader() },
+    body: JSON.stringify(bio),
+  });
+  if (!res.ok) throw new Error('Failed to save your profile');
+}
+
 /**
  * Send a user message to the orchestrator and return the Future Self reply.
  */

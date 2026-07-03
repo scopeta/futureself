@@ -21,14 +21,21 @@ from futureself.schemas import (
 )
 from futureself.web.agent_client import _HISTORY_WINDOW, synthesize
 from futureself.web.auth import AuthError, auth_enabled, bearer_token, validate_token
+from futureself.web.passwords import hash_password, verify_password
 from futureself.web.session import (
     append_messages,
     create_session,
+    create_session_for_user,
+    delete_session,
     get_blueprint_by_user_id,
     get_or_create_user_by_oid,
     get_recent_messages,
+    get_user_credentials,
     get_user_id_from_token,
+    register_user,
+    reset_user_data,
     save_blueprint_by_user_id,
+    set_onboarded,
 )
 
 router = APIRouter()
@@ -76,10 +83,83 @@ async def _require_identity(request: Request, db: DB) -> tuple[uuid.UUID, UserBl
 
 @router.post("/session/create")
 async def session_create(db: DB) -> dict:
-    """Create a blank session and return the session token."""
+    """Create a blank anonymous session and return the session token."""
     blueprint = UserBlueprint()
     token = await create_session(db, blueprint)
     return {"session_token": token}
+
+
+# ---------------------------------------------------------------------------
+# Email/password auth
+# ---------------------------------------------------------------------------
+
+
+class AuthRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=8, max_length=128)
+
+
+def _normalize_email(email: str) -> str:
+    email = email.strip().lower()
+    if "@" not in email or "." not in email.split("@")[-1]:
+        raise HTTPException(status_code=422, detail="Please enter a valid email address.")
+    return email
+
+
+@router.post("/auth/register")
+async def auth_register(body: AuthRequest, db: DB) -> dict:
+    """Register a new email/password account; returns a session token."""
+    email = _normalize_email(body.email)
+    token = await register_user(db, email, hash_password(body.password))
+    if token is None:
+        raise HTTPException(
+            status_code=409, detail="An account with this email already exists."
+        )
+    return {"session_token": token}
+
+
+@router.post("/auth/login")
+async def auth_login(body: AuthRequest, db: DB) -> dict:
+    """Log in with email/password; returns a fresh session token."""
+    email = _normalize_email(body.email)
+    creds = await get_user_credentials(db, email)
+    if creds is None or not verify_password(body.password, creds[1]):
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    token = await create_session_for_user(db, creds[0])
+    return {"session_token": token}
+
+
+@router.post("/auth/logout")
+async def auth_logout(request: Request, db: DB) -> dict:
+    """Invalidate the current session token."""
+    token = bearer_token(request.headers.get("Authorization"))
+    if token:
+        await delete_session(db, token)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Account: onboarding completion + data reset
+# ---------------------------------------------------------------------------
+
+
+@router.post("/onboarding/complete")
+async def onboarding_complete(request: Request, db: DB) -> dict:
+    """Mark the user's onboarding as complete."""
+    user_id, _ = await _require_identity(request, db)
+    await set_onboarded(db, user_id, True)
+    return {"ok": True}
+
+
+@router.post("/account/reset")
+async def account_reset(request: Request, db: DB) -> dict:
+    """Delete all of the user's data (Blueprint + transcript) and reset onboarding.
+
+    Keeps the account/login so the user stays signed in and re-onboards.
+    """
+    user_id, _ = await _require_identity(request, db)
+    await reset_user_data(db, user_id)
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------

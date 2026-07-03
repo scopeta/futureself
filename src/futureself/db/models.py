@@ -48,17 +48,22 @@ class User(Base):
         Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     oid: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    """Entra ID `oid` claim (immutable per-user key). NULL for anonymous users."""
+    """Entra ID `oid` claim (immutable per-user key). NULL for anonymous/email users."""
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    """Login email for email/password users. NULL for anonymous/Entra users."""
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    """PBKDF2 hash (see web/passwords.py). NULL for anonymous/Entra users."""
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, nullable=False
     )
 
-    # Unique on oid, but only for non-NULL values: SQL Server rejects multiple
-    # NULLs in a plain UNIQUE index (unlike Postgres/SQLite), and anonymous users
-    # all have oid=NULL. The mssql_where filter is ignored on other dialects,
-    # which already treat NULLs as distinct.
+    # Unique on oid/email, but only for non-NULL values: SQL Server rejects
+    # multiple NULLs in a plain UNIQUE index (unlike Postgres/SQLite), and
+    # anonymous users have both NULL. The mssql_where filter is ignored on other
+    # dialects, which already treat NULLs as distinct.
     __table_args__ = (
         Index("ix_users_oid", "oid", unique=True, mssql_where=text("oid IS NOT NULL")),
+        Index("ix_users_email", "email", unique=True, mssql_where=text("email IS NOT NULL")),
     )
 
     blueprint: Mapped["Blueprint"] = relationship(

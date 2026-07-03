@@ -9,7 +9,7 @@ from __future__ import annotations
 import secrets
 import uuid
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
@@ -180,3 +180,92 @@ async def get_recent_messages(
         )
     ).all()
     return [ConversationTurn(role=r.role, content=r.content) for r in reversed(rows)]
+
+
+# ---------------------------------------------------------------------------
+# Email/password accounts. Login/registration issue the same Bearer session
+# token the anonymous flow uses; the auth invariant (user_id resolved from the
+# server-side session token) is unchanged.
+# ---------------------------------------------------------------------------
+
+
+async def register_user(
+    db: AsyncSession, email: str, password_hash: str
+) -> str | None:
+    """Create an email/password user + blank blueprint + session.
+
+    Returns the session token, or ``None`` if the email is already registered
+    (enforced by the unique index on ``users.email``).
+    """
+    token = secrets.token_urlsafe(24)
+    user = User(email=email, password_hash=password_hash)
+    db.add(user)
+    try:
+        await db.flush()  # assign user.id + trip the unique index if email taken
+        db.add(Blueprint(user_id=user.id, data=UserBlueprint().model_dump()))
+        db.add(Session(token=token, user_id=user.id))
+        await db.commit()
+        return token
+    except IntegrityError:
+        await db.rollback()
+        return None
+
+
+async def get_user_credentials(
+    db: AsyncSession, email: str
+) -> tuple[uuid.UUID, str] | None:
+    """Return ``(user_id, password_hash)`` for an email, or ``None``."""
+    row = (
+        await db.execute(
+            select(User.id, User.password_hash).where(User.email == email)
+        )
+    ).first()
+    if row is None or row.password_hash is None:
+        return None
+    return row.id, row.password_hash
+
+
+async def create_session_for_user(db: AsyncSession, user_id: uuid.UUID) -> str:
+    """Issue a new session token for an existing user (login)."""
+    token = secrets.token_urlsafe(24)
+    db.add(Session(token=token, user_id=user_id))
+    await db.commit()
+    return token
+
+
+async def delete_session(db: AsyncSession, token: str) -> None:
+    """Invalidate a session token (logout)."""
+    await db.execute(delete(Session).where(Session.token == token))
+    await db.commit()
+
+
+async def reset_user_data(db: AsyncSession, user_id: uuid.UUID) -> None:
+    """Delete the user's transcript and reset their Blueprint to blank.
+
+    The account (login) is kept so the user stays signed in and can re-onboard.
+    """
+    await db.execute(delete(Message).where(Message.user_id == user_id))
+    await db.execute(
+        update(Blueprint)
+        .where(Blueprint.user_id == user_id)
+        .values(data=UserBlueprint().model_dump())
+    )
+    await db.commit()
+
+
+async def set_onboarded(
+    db: AsyncSession, user_id: uuid.UUID, value: bool = True
+) -> None:
+    """Set the Blueprint's ``onboarded`` flag."""
+    row = await db.scalar(select(Blueprint).where(Blueprint.user_id == user_id))
+    if row is None:
+        return
+    updated = UserBlueprint.model_validate(row.data).model_copy(
+        update={"onboarded": value}
+    )
+    await db.execute(
+        update(Blueprint)
+        .where(Blueprint.user_id == user_id)
+        .values(data=updated.model_dump())
+    )
+    await db.commit()

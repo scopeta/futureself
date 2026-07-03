@@ -1,12 +1,29 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, User } from "lucide-react";
+import { Send, Settings, User, Trash2, LogOut } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import ChatMessage, { type Message } from "@/components/ChatMessage";
 import TypingIndicator from "@/components/TypingIndicator";
-import { sendMessage as apiSendMessage } from "@/lib/api";
+import { sendMessage as apiSendMessage, resetAllData, logout } from "@/lib/api";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { motion, AnimatePresence } from "framer-motion";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 const WELCOME_MESSAGE: Message = {
   id: "welcome",
@@ -23,6 +40,24 @@ const ChatInterface = () => {
   const [showPrompts, setShowPrompts] = useState(true);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const [confirmReset, setConfirmReset] = useState(false);
+  const [resetting, setResetting] = useState(false);
+
+  const handleReset = async () => {
+    setResetting(true);
+    try {
+      await resetAllData();
+      navigate("/onboarding", { replace: true });
+    } catch {
+      setResetting(false);
+      setConfirmReset(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    await logout();
+    navigate("/login", { replace: true });
+  };
 
   const scrollToBottom = useCallback(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -89,10 +124,54 @@ const ChatInterface = () => {
         <h1 className="text-sm font-medium tracking-wide text-muted-foreground">
           FutureSelf
         </h1>
-        <Button variant="ghost" size="icon" onClick={() => navigate("/blueprint")} className="h-9 w-9">
-          <User className="h-4 w-4" />
-        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="icon" className="h-9 w-9" aria-label="Menu">
+              <Settings className="h-4 w-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-56">
+            <DropdownMenuItem onClick={() => navigate("/blueprint")}>
+              <User className="mr-2 h-4 w-4" /> Blueprint
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              className="text-destructive focus:text-destructive"
+              onClick={() => setConfirmReset(true)}
+            >
+              <Trash2 className="mr-2 h-4 w-4" /> Delete all data &amp; restart
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={handleLogout}>
+              <LogOut className="mr-2 h-4 w-4" /> Log out
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
+
+      <AlertDialog open={confirmReset} onOpenChange={setConfirmReset}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete all your data?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently deletes your blueprint and conversation history, then
+              restarts onboarding. Your account stays signed in, but this can't be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={resetting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                handleReset();
+              }}
+              disabled={resetting}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {resetting ? "Deleting…" : "Delete everything"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Messages */}
       <ScrollArea className="flex-1 px-4">
