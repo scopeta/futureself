@@ -1,7 +1,9 @@
 """JSON REST API routes for the FutureSelf React frontend."""
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 import uuid
 from typing import Annotated
 
@@ -24,6 +26,8 @@ from futureself.web.auth import AuthError, auth_enabled, bearer_token, validate_
 from futureself.web.passwords import hash_password, verify_password
 from futureself.web.session import (
     append_messages,
+    clear_messages,
+    confirm_facts,
     create_session,
     create_session_for_user,
     delete_session,
@@ -163,6 +167,55 @@ async def account_reset(request: Request, db: DB) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Memory lifecycle: clear history + fact distillation (spec §11.1)
+# ---------------------------------------------------------------------------
+
+
+@router.delete("/messages")
+async def messages_clear(request: Request, db: DB) -> dict:
+    """Delete the conversation history only — Blueprint and onboarding untouched."""
+    user_id, _ = await _require_identity(request, db)
+    await clear_messages(db, user_id)
+    return {"ok": True}
+
+
+# How much transcript the distiller reads (recent turns).
+_DISTILL_WINDOW = int(os.getenv("FUTURESELF_DISTILL_WINDOW", "200"))
+
+
+@router.post("/facts/candidates")
+async def facts_candidates(request: Request, db: DB) -> dict:
+    """Run the fact distiller over the recent transcript and propose candidates.
+
+    Nothing is saved — the user reviews and confirms via ``POST /facts/confirm``.
+    """
+    from futureself.web.facts import extract_candidates  # noqa: PLC0415
+
+    user_id, blueprint = await _require_identity(request, db)
+    turns = await get_recent_messages(db, user_id, _DISTILL_WINDOW)
+    result = await asyncio.to_thread(extract_candidates, blueprint, turns)
+    if result.error:
+        logger.warning("fact distillation degraded: %s", result.error)
+    return {"candidates": result.facts, "degraded": bool(result.error)}
+
+
+class FactsConfirmRequest(BaseModel):
+    facts: list[str] = Field(default_factory=list, max_length=100)
+    clear_history: bool = False
+
+
+@router.post("/facts/confirm")
+async def facts_confirm(body: FactsConfirmRequest, request: Request, db: DB) -> dict:
+    """Save the user-chosen facts to the Blueprint; optionally prune the transcript."""
+    user_id, _ = await _require_identity(request, db)
+    await confirm_facts(db, user_id, body.facts)
+    if body.clear_history:
+        await clear_messages(db, user_id)
+    blueprint = await get_blueprint_by_user_id(db, user_id)
+    return {"ok": True, "inferred_facts": blueprint.inferred_facts if blueprint else []}
+
+
+# ---------------------------------------------------------------------------
 # Chat
 # ---------------------------------------------------------------------------
 
@@ -221,32 +274,53 @@ async def blueprint_get(request: Request, db: DB) -> dict:
 
 # ---------------------------------------------------------------------------
 # Blueprint — mutations
+#
+# PATCH endpoints are **partial merges**: only the fields present in the request
+# body change; everything else in the section is preserved. (Full replacement
+# was a data-loss bug: PATCH bio {age} used to wipe biomarker_history.)
 # ---------------------------------------------------------------------------
 
 
+def _merge_section(current: BaseModel, body: dict) -> dict:
+    """Merge a partial-update dict over an existing section, keeping other fields."""
+    return {**current.model_dump(), **body}
+
+
 @router.patch("/blueprint/bio")
-async def blueprint_patch_bio(body: BioData, request: Request, db: DB) -> dict:
-    """Update bio fields (age, sex, height, weight, conditions, medications)."""
+async def blueprint_patch_bio(body: dict, request: Request, db: DB) -> dict:
+    """Partially update bio fields (age, sex, height, weight, conditions, ...)."""
     user_id, blueprint = await _require_identity(request, db)
-    updated = blueprint.model_copy(update={"bio": body})
+    try:
+        merged = BioData.model_validate(_merge_section(blueprint.bio, body))
+    except Exception:
+        raise HTTPException(status_code=422, detail="Invalid bio fields.") from None
+    updated = blueprint.model_copy(update={"bio": merged})
     await save_blueprint_by_user_id(user_id, updated, db)
     return updated.model_dump()
 
 
 @router.patch("/blueprint/context")
-async def blueprint_patch_context(body: ContextData, request: Request, db: DB) -> dict:
-    """Update context fields (location, occupation, income, family)."""
+async def blueprint_patch_context(body: dict, request: Request, db: DB) -> dict:
+    """Partially update context fields (location, occupation, income, family)."""
     user_id, blueprint = await _require_identity(request, db)
-    updated = blueprint.model_copy(update={"context": body})
+    try:
+        merged = ContextData.model_validate(_merge_section(blueprint.context, body))
+    except Exception:
+        raise HTTPException(status_code=422, detail="Invalid context fields.") from None
+    updated = blueprint.model_copy(update={"context": merged})
     await save_blueprint_by_user_id(user_id, updated, db)
     return updated.model_dump()
 
 
 @router.patch("/blueprint/psych")
-async def blueprint_patch_psych(body: PsychData, request: Request, db: DB) -> dict:
-    """Update psychological fields (goals, fears, stress, flags)."""
+async def blueprint_patch_psych(body: dict, request: Request, db: DB) -> dict:
+    """Partially update psychological fields (goals, fears, stress, flags)."""
     user_id, blueprint = await _require_identity(request, db)
-    updated = blueprint.model_copy(update={"psych": body})
+    try:
+        merged = PsychData.model_validate(_merge_section(blueprint.psych, body))
+    except Exception:
+        raise HTTPException(status_code=422, detail="Invalid psych fields.") from None
+    updated = blueprint.model_copy(update={"psych": merged})
     await save_blueprint_by_user_id(user_id, updated, db)
     return updated.model_dump()
 
@@ -255,11 +329,23 @@ async def blueprint_patch_psych(body: PsychData, request: Request, db: DB) -> di
 async def blueprint_add_biomarker(
     body: BiomarkerEntry, request: Request, db: DB
 ) -> dict:
-    """Add a biomarker entry to the history."""
+    """Add a measurement to the biomarker history (a data point over time)."""
     user_id, blueprint = await _require_identity(request, db)
     new_bio = blueprint.bio.model_copy(
         update={"biomarker_history": list(blueprint.bio.biomarker_history) + [body]}
     )
+    updated = blueprint.model_copy(update={"bio": new_bio})
+    await save_blueprint_by_user_id(user_id, updated, db)
+    return updated.model_dump()
+
+
+@router.put("/blueprint/biomarkers")
+async def blueprint_replace_biomarkers(
+    body: list[BiomarkerEntry], request: Request, db: DB
+) -> dict:
+    """Replace the full biomarker history — enables editing/deleting any entry."""
+    user_id, blueprint = await _require_identity(request, db)
+    new_bio = blueprint.bio.model_copy(update={"biomarker_history": body})
     updated = blueprint.model_copy(update={"bio": new_bio})
     await save_blueprint_by_user_id(user_id, updated, db)
     return updated.model_dump()

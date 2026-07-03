@@ -6,22 +6,15 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
+import BiomarkerHistory from "@/components/BiomarkerHistory";
 import {
-  addBiomarker,
   fetchBlueprint,
   fetchQuality,
   hasSession,
   patchContext,
   patchPsych,
+  type BiomarkerEntry,
 } from "@/lib/api";
-
-interface BiomarkerEntry {
-  marker: string;
-  value: number;
-  unit: string;
-  date: string;
-  source?: string | null;
-}
 
 interface QualityReport {
   score: number;
@@ -56,7 +49,6 @@ const Blueprint = () => {
   const [loading, setLoading] = useState(true);
 
   // Form state
-  const [newBiomarker, setNewBiomarker] = useState({ marker: "", value: "", unit: "" });
   const [newGoal, setNewGoal] = useState("");
   const [newLifestyle, setNewLifestyle] = useState("");
 
@@ -92,24 +84,6 @@ const Blueprint = () => {
       .catch(() => {/* non-fatal — show empty state */})
       .finally(() => setLoading(false));
   }, [navigate]);
-
-  const handleAddBiomarker = async () => {
-    if (!newBiomarker.marker.trim() || !newBiomarker.value.trim()) return;
-    const entry: BiomarkerEntry = {
-      marker: newBiomarker.marker.trim(),
-      value: parseFloat(newBiomarker.value),
-      unit: newBiomarker.unit.trim(),
-      date: new Date().toISOString().split("T")[0],
-    };
-    setSaving("biomarkers");
-    try {
-      await addBiomarker(entry);
-      setBiomarkers((prev) => [...prev, entry]);
-      setNewBiomarker({ marker: "", value: "", unit: "" });
-    } finally {
-      setSaving(null);
-    }
-  };
 
   const handleAddGoal = async () => {
     if (!newGoal.trim()) return;
@@ -219,56 +193,9 @@ const Blueprint = () => {
               </TabsTrigger>
             </TabsList>
 
-            {/* Biomarkers */}
-            <TabsContent value="biomarkers" className="space-y-3 mt-4">
-              {biomarkers.length === 0 && (
-                <p className="text-sm text-muted-foreground text-center py-4">No biomarkers yet.</p>
-              )}
-              {biomarkers.map((b, i) => (
-                <Card key={i} className="group">
-                  <CardContent className="flex items-center justify-between p-4">
-                    <div>
-                      <p className="text-sm font-medium text-foreground">{b.marker}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {b.value} {b.unit} · {b.date}
-                      </p>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
-              <Card className="border-dashed">
-                <CardContent className="p-4">
-                  <div className="flex flex-wrap gap-2">
-                    <Input
-                      placeholder="Name (e.g. LDL)"
-                      value={newBiomarker.marker}
-                      onChange={(e) => setNewBiomarker((p) => ({ ...p, marker: e.target.value }))}
-                      className="flex-1 min-w-[120px] h-9 text-sm"
-                    />
-                    <Input
-                      placeholder="Value"
-                      value={newBiomarker.value}
-                      onChange={(e) => setNewBiomarker((p) => ({ ...p, value: e.target.value }))}
-                      className="w-20 h-9 text-sm"
-                      type="number"
-                    />
-                    <Input
-                      placeholder="Unit"
-                      value={newBiomarker.unit}
-                      onChange={(e) => setNewBiomarker((p) => ({ ...p, unit: e.target.value }))}
-                      className="w-20 h-9 text-sm"
-                    />
-                    <Button
-                      size="sm"
-                      onClick={handleAddBiomarker}
-                      disabled={!newBiomarker.marker.trim() || !newBiomarker.value.trim() || saving === "biomarkers"}
-                    >
-                      <Plus className="h-3.5 w-3.5 mr-1" />
-                      {saving === "biomarkers" ? "Saving…" : "Add"}
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
+            {/* Biomarkers — data points over time, grouped by marker */}
+            <TabsContent value="biomarkers" className="mt-4">
+              <BiomarkerHistory entries={biomarkers} onChange={setBiomarkers} />
             </TabsContent>
 
             {/* Goals */}

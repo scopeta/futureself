@@ -55,6 +55,9 @@ def app(monkeypatch, db_session_factory) -> FastAPI:
     sessions from the test factory.
     """
     monkeypatch.setattr(engine_module, "init_engine", lambda: None)
+    # Background tasks (e.g. the WhatsApp webhook) create their own sessions via
+    # engine.session_factory() — point it at the test factory too.
+    monkeypatch.setattr(engine_module, "_session_factory", db_session_factory)
 
     from futureself.web.app import create_app  # noqa: PLC0415
 

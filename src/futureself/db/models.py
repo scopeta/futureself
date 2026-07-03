@@ -53,17 +53,22 @@ class User(Base):
     """Login email for email/password users. NULL for anonymous/Entra users."""
     password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     """PBKDF2 hash (see web/passwords.py). NULL for anonymous/Entra users."""
+    phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    """Linked WhatsApp number in E.164 (e.g. +6591234567). NULL until linked."""
+    whatsapp_link_code: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    """One-time code shown in the web UI; consumed when the user texts LINK <code>."""
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, nullable=False
     )
 
-    # Unique on oid/email, but only for non-NULL values: SQL Server rejects
+    # Unique on oid/email/phone, but only for non-NULL values: SQL Server rejects
     # multiple NULLs in a plain UNIQUE index (unlike Postgres/SQLite), and
-    # anonymous users have both NULL. The mssql_where filter is ignored on other
-    # dialects, which already treat NULLs as distinct.
+    # anonymous users have them all NULL. The mssql_where filter is ignored on
+    # other dialects, which already treat NULLs as distinct.
     __table_args__ = (
         Index("ix_users_oid", "oid", unique=True, mssql_where=text("oid IS NOT NULL")),
         Index("ix_users_email", "email", unique=True, mssql_where=text("email IS NOT NULL")),
+        Index("ix_users_phone", "phone", unique=True, mssql_where=text("phone IS NOT NULL")),
     )
 
     blueprint: Mapped["Blueprint"] = relationship(

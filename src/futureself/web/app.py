@@ -112,6 +112,11 @@ def create_app() -> FastAPI:
 
     application.include_router(api_router, prefix="/api")
 
+    # WhatsApp channel (feature-flagged on TWILIO_* env; webhook is
+    # signature-authenticated). Imported lazily to keep startup lean.
+    from futureself.web.routes.whatsapp import router as whatsapp_router  # noqa: PLC0415
+    application.include_router(whatsapp_router, prefix="/api")
+
     # Capture incoming HTTP requests as App Insights "requests" telemetry.
     # configure_azure_monitor() (module import above) wires the exporter and the
     # agent/dependency spans, but server-side FastAPI requests need explicit

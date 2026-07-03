@@ -47,3 +47,10 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         raise RuntimeError("Database not initialised — call init_engine() at startup")
     async with _session_factory() as session:
         yield session
+
+
+def session_factory() -> async_sessionmaker[AsyncSession]:
+    """Return the session factory — for background tasks that outlive a request."""
+    if _session_factory is None:
+        raise RuntimeError("Database not initialised — call init_engine() at startup")
+    return _session_factory

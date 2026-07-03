@@ -92,6 +92,84 @@ export async function resetAllData(): Promise<void> {
   if (!res.ok) throw new Error('Failed to reset your data');
 }
 
+/** Delete the conversation history only — blueprint and onboarding are kept. */
+export async function clearConversation(): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/messages`, {
+    method: 'DELETE',
+    headers: authHeader(),
+  });
+  if (!res.ok) throw new Error('Failed to clear the conversation');
+}
+
+/** Ask the fact distiller for candidate facts from the recent conversation. */
+export async function fetchFactCandidates(): Promise<{ candidates: string[]; degraded: boolean }> {
+  const res = await fetch(`${API_BASE}/api/facts/candidates`, {
+    method: 'POST',
+    headers: authHeader(),
+  });
+  if (!res.ok) throw new Error('Failed to extract facts');
+  return res.json();
+}
+
+/** Save user-chosen facts to the blueprint; optionally prune the conversation. */
+export async function confirmFacts(
+  facts: string[],
+  clearHistory: boolean,
+): Promise<string[]> {
+  const res = await fetch(`${API_BASE}/api/facts/confirm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeader() },
+    body: JSON.stringify({ facts, clear_history: clearHistory }),
+  });
+  if (!res.ok) throw new Error('Failed to save facts');
+  return (await res.json()).inferred_facts as string[];
+}
+
+/** Generate a one-time WhatsApp link code. */
+export async function whatsappLink(): Promise<{ code: string; instructions: string }> {
+  const res = await fetch(`${API_BASE}/api/whatsapp/link`, {
+    method: 'POST',
+    headers: authHeader(),
+  });
+  if (res.status === 409) throw new Error('WhatsApp is not configured on this deployment yet.');
+  if (!res.ok) throw new Error('Failed to generate a link code');
+  return res.json();
+}
+
+/** WhatsApp channel status for the current user. */
+export async function whatsappStatus(): Promise<{ enabled: boolean; phone: string | null }> {
+  const res = await fetch(`${API_BASE}/api/whatsapp/status`, { headers: authHeader() });
+  if (!res.ok) throw new Error('Failed to fetch WhatsApp status');
+  return res.json();
+}
+
+/** Unlink the user's WhatsApp number. */
+export async function whatsappUnlink(): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/whatsapp/unlink`, {
+    method: 'POST',
+    headers: authHeader(),
+  });
+  if (!res.ok) throw new Error('Failed to unlink WhatsApp');
+}
+
+export interface BiomarkerEntry {
+  marker: string;
+  value: number;
+  unit: string;
+  date: string;
+  source?: string | null;
+}
+
+/** Replace the full biomarker history (edit/delete any measurement). */
+export async function putBiomarkers(entries: BiomarkerEntry[]): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/blueprint/biomarkers`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...authHeader() },
+    body: JSON.stringify(entries),
+  });
+  if (!res.ok) throw new Error('Failed to update measurements');
+}
+
 /** Patch the bio section of the blueprint (age, sex, height, weight). */
 export async function patchBio(bio: {
   age?: number | null;

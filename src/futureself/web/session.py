@@ -253,6 +253,105 @@ async def reset_user_data(db: AsyncSession, user_id: uuid.UUID) -> None:
     await db.commit()
 
 
+async def clear_messages(db: AsyncSession, user_id: uuid.UUID) -> None:
+    """Delete the user's conversation history only — the Blueprint is untouched.
+
+    Used both standalone ("clear conversation") and as the cleanup step after
+    fact distillation (spec §11.1 memory lifecycle).
+    """
+    await db.execute(delete(Message).where(Message.user_id == user_id))
+    await db.commit()
+
+
+async def confirm_facts(
+    db: AsyncSession, user_id: uuid.UUID, facts: list[str]
+) -> None:
+    """Append user-confirmed facts to the Blueprint (the validated path).
+
+    Deduplicates against existing facts; order is preserved.
+    """
+    row = await db.scalar(select(Blueprint).where(Blueprint.user_id == user_id))
+    if row is None or not facts:
+        return
+    blueprint = UserBlueprint.model_validate(row.data)
+    seen = set(blueprint.inferred_facts)
+    new: list[str] = []
+    for fact in (f.strip() for f in facts):
+        if fact and fact not in seen:
+            new.append(fact)
+            seen.add(fact)  # dedupe within the batch too
+    if not new:
+        return
+    updated = blueprint.model_copy(
+        update={"inferred_facts": list(blueprint.inferred_facts) + new}
+    )
+    await db.execute(
+        update(Blueprint)
+        .where(Blueprint.user_id == user_id)
+        .values(data=updated.model_dump())
+    )
+    await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# WhatsApp channel binding (users.phone ↔ account, via one-time link code)
+# ---------------------------------------------------------------------------
+
+
+async def set_link_code(db: AsyncSession, user_id: uuid.UUID, code: str) -> None:
+    """Store a pending WhatsApp link code on the user (replaces any prior code)."""
+    await db.execute(
+        update(User).where(User.id == user_id).values(whatsapp_link_code=code)
+    )
+    await db.commit()
+
+
+async def consume_link_code(
+    db: AsyncSession, code: str, phone: str
+) -> uuid.UUID | None:
+    """Bind ``phone`` to the account holding ``code``; returns the user_id.
+
+    The code is one-time (cleared on use). If the phone was linked to another
+    account it is moved — the texter proved control of both the web session
+    (which displayed the code) and the phone.
+    """
+    user_id = await db.scalar(
+        select(User.id).where(User.whatsapp_link_code == code.upper())
+    )
+    if user_id is None:
+        return None
+    await db.execute(  # free the phone from any other account
+        update(User).where(User.phone == phone).values(phone=None)
+    )
+    await db.execute(
+        update(User)
+        .where(User.id == user_id)
+        .values(phone=phone, whatsapp_link_code=None)
+    )
+    await db.commit()
+    return user_id
+
+
+async def get_user_id_by_phone(db: AsyncSession, phone: str) -> uuid.UUID | None:
+    """Resolve a linked WhatsApp number to its account."""
+    return await db.scalar(select(User.id).where(User.phone == phone))
+
+
+async def get_linked_phone(db: AsyncSession, user_id: uuid.UUID) -> str | None:
+    """Return the user's linked WhatsApp number, if any."""
+    return await db.scalar(select(User.phone).where(User.id == user_id))
+
+
+async def unlink_whatsapp(db: AsyncSession, user_id: uuid.UUID) -> None:
+    """Remove the WhatsApp binding (and any pending code)."""
+    await db.execute(
+        update(User)
+        .where(User.id == user_id)
+        .values(phone=None, whatsapp_link_code=None)
+    )
+    await db.commit()
+
+
 async def set_onboarded(
     db: AsyncSession, user_id: uuid.UUID, value: bool = True
 ) -> None:

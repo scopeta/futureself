@@ -525,6 +525,26 @@ deliberately separated:
 - **Isolation:** the `messages` table is keyed by the server-resolved `user_id`
   (auth invariant §6.5); one Blueprint + transcript per user backs all channels.
 
+**Memory lifecycle (long-run efficiency).** The bounded window alone would slowly
+lose old context as conversations grow; the lifecycle closes that loop while
+keeping per-turn cost flat and the user in control:
+
+1. **Chat** — turns append to `messages`; only the last-N window is sent per turn.
+2. **Distill (user-triggered)** — `POST /facts/candidates` runs one LLM pass
+   (`web/facts.py`, judge-style forced tool use, never crashes) over the recent
+   transcript and proposes durable third-person facts. **User statements only** —
+   the assistant's first-person roleplay is explicitly excluded (the old drift
+   source).
+3. **Confirm (user-chosen)** — `POST /facts/confirm` saves only the facts the
+   user ticked into `inferred_facts` (the validated path), optionally pruning the
+   transcript in the same call.
+4. **Prune** — `DELETE /messages` clears the transcript **without touching the
+   Blueprint or onboarding** — usable any time, not just after distillation.
+
+Net effect: durable knowledge migrates from the unbounded transcript into the
+compact, validated Blueprint, and the transcript can be cut whenever it grows —
+context per turn stays bounded no matter how much conversation accumulates.
+
 **Why not Foundry-managed memory?** Two mechanisms, both rejected for now:
 (1) the Responses conversation store is stateless with no per-user isolation on
 the agent endpoint (§11.0); (2) Foundry **Agent Memory** (Cosmos-backed,
@@ -549,6 +569,30 @@ model. Seam: `x-memory-user-id = user_id` + the Memory Store API.
 - One synthesis pass per turn (~1–2 completions when skills load; Section 4).
 - SkillsProvider and `load_skill` flow (Section 6).
 - Blueprint immutability rule (Section 5.1).
+
+### 11.35 WhatsApp channel (Phase 7, shipped behind a flag)
+
+WhatsApp is a **second channel onto the same user** — one Blueprint, one
+transcript, per §11.1. Implementation (`web/whatsapp.py` + `web/routes/whatsapp.py`):
+
+- **Provider:** Twilio's WhatsApp API, called with plain `httpx` (no SDK).
+  Feature-flagged on `TWILIO_ACCOUNT_SID` + `TWILIO_AUTH_TOKEN` +
+  `TWILIO_WHATSAPP_FROM`; with them unset every WhatsApp surface is inert
+  (webhook 404, link endpoint 409).
+- **Linking:** the signed-in web user generates a one-time code (Settings →
+  Link WhatsApp); texting `LINK <code>` binds the sender's number to
+  `users.phone` (filtered-unique, migration 0007). The code proves control of
+  both the web session and the phone; unlink any time.
+- **Webhook trust:** `POST /api/whatsapp/webhook` carries no Bearer token —
+  Twilio's `X-Twilio-Signature` (HMAC-SHA1 over URL + sorted form params) is
+  validated instead; `TWILIO_WEBHOOK_URL` pins the signed URL behind the proxy.
+- **Async replies:** an agent turn can exceed Twilio's ~15s webhook timeout, so
+  the webhook ACKs with empty TwiML immediately and a background task runs the
+  turn (same `synthesize` + `append_messages` as the web path, own DB sessions)
+  and delivers the reply via Twilio's REST API. Link confirmations reply inline.
+- **Setup:** point a Twilio WhatsApp sender (sandbox or Business number) at
+  `https://<app>/api/whatsapp/webhook`, set the three env vars (+
+  `TWILIO_WEBHOOK_URL`) as Container App secrets/env.
 
 ### 11.4 Auth activation (Phase 6.5 completion lands here)
 
