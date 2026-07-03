@@ -99,6 +99,7 @@ jobs:
               database-url="$DATABASE_URL" \
               appinsights-conn="$APPLICATIONINSIGHTS_CONNECTION_STRING"
             az containerapp update -n futureself -g "$RG" --image "$IMG" \
+              --min-replicas 1 --max-replicas 10 \
               --set-env-vars \
                 FUTURESELF_MODEL="$MODEL" \
                 FOUNDRY_AGENT_ENDPOINT="$FOUNDRY_AGENT_ENDPOINT" \
@@ -118,6 +119,7 @@ jobs:
               --registry-username ${{ secrets.ACR_USERNAME }} \
               --registry-password ${{ secrets.ACR_PASSWORD }} \
               --target-port 8000 --ingress external \
+              --min-replicas 1 --max-replicas 10 \
               --system-assigned \
               --secrets \
                 anthropic-api-key="$ANTHROPIC_API_KEY" \
