@@ -253,6 +253,17 @@ async def reset_user_data(db: AsyncSession, user_id: uuid.UUID) -> None:
     await db.commit()
 
 
+async def get_message_count(db: AsyncSession, user_id: uuid.UUID) -> int:
+    """Number of transcript turns for a user (drives the fact-review nudge)."""
+    from sqlalchemy import func  # noqa: PLC0415
+
+    return (
+        await db.scalar(
+            select(func.count()).select_from(Message).where(Message.user_id == user_id)
+        )
+    ) or 0
+
+
 async def clear_messages(db: AsyncSession, user_id: uuid.UUID) -> None:
     """Delete the user's conversation history only — the Blueprint is untouched.
 

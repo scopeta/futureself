@@ -2,6 +2,8 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import ChatMessage, { type Message } from "@/components/ChatMessage";
+import CuratorBanner from "@/components/CuratorBanner";
+import FactsDialog from "@/components/FactsDialog";
 import SettingsMenu from "@/components/SettingsMenu";
 import TypingIndicator from "@/components/TypingIndicator";
 import { sendMessage as apiSendMessage } from "@/lib/api";
@@ -22,10 +24,13 @@ const ChatInterface = () => {
   const [showPrompts, setShowPrompts] = useState(true);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const [factsOpen, setFactsOpen] = useState(false);
+  const [nudgeEpoch, setNudgeEpoch] = useState(0);
 
   const handleConversationCleared = useCallback(() => {
     setMessages([WELCOME_MESSAGE]);
     setShowPrompts(true);
+    setNudgeEpoch((n) => n + 1); // recompute curator nudges
   }, []);
 
   const scrollToBottom = useCallback(() => {
@@ -93,8 +98,20 @@ const ChatInterface = () => {
         <h1 className="text-sm font-medium tracking-wide text-muted-foreground">
           FutureSelf
         </h1>
-        <SettingsMenu onConversationCleared={handleConversationCleared} />
+        <SettingsMenu
+          onConversationCleared={handleConversationCleared}
+          onOpenFacts={() => setFactsOpen(true)}
+        />
       </div>
+
+      {/* Curator nudges (rule-based context-quality suggestions) */}
+      <CuratorBanner refreshSignal={nudgeEpoch} onReviewFacts={() => setFactsOpen(true)} />
+
+      <FactsDialog
+        open={factsOpen}
+        onOpenChange={setFactsOpen}
+        onConversationCleared={handleConversationCleared}
+      />
 
       {/* Messages */}
       <ScrollArea className="flex-1 px-4">

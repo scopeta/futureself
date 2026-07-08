@@ -594,6 +594,29 @@ transcript, per §11.1. Implementation (`web/whatsapp.py` + `web/routes/whatsapp
   `https://<app>/api/whatsapp/webhook`, set the three env vars (+
   `TWILIO_WEBHOOK_URL`) as Container App secrets/env.
 
+### 11.36 Curator (context-quality policy; v1 rules, no second agent)
+
+The **Curator role** keeps the context the Future Self reasons over fresh:
+prompting the distill→confirm→prune cycle when the transcript grows, flagging
+measurements stale per retest protocols, and pointing out high-value Blueprint
+gaps. **v1 is deliberately not an agent** — it's a deterministic policy module
+(`web/curator.py`) surfaced as neutral UI copy (a dismissible banner), so the
+single-voice rule holds: no second persona ever addresses the user.
+
+- Rules: fact-review every `FUTURESELF_FACT_REVIEW_EVERY` turns (default 30,
+  bucketed ids so dismissal doesn't silence the next cycle); per-marker retest
+  intervals (`RETEST_PROTOCOLS_MONTHS`, e.g. HbA1c 6mo, lipids/testosterone/
+  vitamin D 12mo; ids keyed to the latest measurement so a new data point clears
+  the nudge); Blueprint gaps reusing `blueprint_quality.check_quality`.
+- Surface: `GET /api/curator/nudges` → top-3 prioritized
+  (facts_review > stale_test > gap); frontend `CuratorBanner` shows the first
+  non-dismissed one, actions deep-link to the facts dialog or the Blueprint.
+- **Evolution path (build only when rules fall short):** v2 — an off-turn LLM
+  pass (cron / Agent Harness, Phase 9) that composes/prioritizes nudges from
+  v1's findings; v3 — A2A consult of the hosted Future Self ("what's missing to
+  advise this user well?") once Foundry A2A is GA. Neither changes the
+  user-facing single-agent contract.
+
 ### 11.4 Auth activation (Phase 6.5 completion lands here)
 
 Real Entra login is switched on as part of this migration — against the final

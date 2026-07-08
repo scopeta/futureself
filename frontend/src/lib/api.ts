@@ -152,6 +152,20 @@ export async function whatsappUnlink(): Promise<void> {
   if (!res.ok) throw new Error('Failed to unlink WhatsApp');
 }
 
+export interface Nudge {
+  id: string;
+  kind: 'facts_review' | 'stale_test' | 'gap';
+  message: string;
+  action: 'review_facts' | 'blueprint';
+}
+
+/** Curator v1: rule-based context-quality nudges. */
+export async function fetchNudges(): Promise<Nudge[]> {
+  const res = await fetch(`${API_BASE}/api/curator/nudges`, { headers: authHeader() });
+  if (!res.ok) throw new Error('Failed to fetch nudges');
+  return (await res.json()).nudges as Nudge[];
+}
+
 export interface BiomarkerEntry {
   marker: string;
   value: number;

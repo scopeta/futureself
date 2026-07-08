@@ -31,14 +31,11 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
   clearConversation,
-  confirmFacts,
-  fetchFactCandidates,
   logout,
   resetAllData,
   whatsappLink,
@@ -49,9 +46,11 @@ import {
 interface SettingsMenuProps {
   /** Called after the conversation history is cleared, so the chat UI can reset. */
   onConversationCleared: () => void;
+  /** Opens the Review & save facts dialog (owned by the chat page). */
+  onOpenFacts: () => void;
 }
 
-const SettingsMenu = ({ onConversationCleared }: SettingsMenuProps) => {
+const SettingsMenu = ({ onConversationCleared, onOpenFacts }: SettingsMenuProps) => {
   const navigate = useNavigate();
 
   // Delete-everything dialog
@@ -60,14 +59,6 @@ const SettingsMenu = ({ onConversationCleared }: SettingsMenuProps) => {
   // Clear-conversation dialog
   const [confirmClear, setConfirmClear] = useState(false);
   const [clearing, setClearing] = useState(false);
-  // Facts dialog
-  const [factsOpen, setFactsOpen] = useState(false);
-  const [factsLoading, setFactsLoading] = useState(false);
-  const [candidates, setCandidates] = useState<string[]>([]);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [pruneAfter, setPruneAfter] = useState(true);
-  const [factsSaving, setFactsSaving] = useState(false);
-  const [factsError, setFactsError] = useState<string | null>(null);
   // WhatsApp dialog
   const [waOpen, setWaOpen] = useState(false);
   const [waLoading, setWaLoading] = useState(false);
@@ -95,36 +86,6 @@ const SettingsMenu = ({ onConversationCleared }: SettingsMenuProps) => {
     } finally {
       setClearing(false);
       setConfirmClear(false);
-    }
-  };
-
-  const openFacts = async () => {
-    setFactsOpen(true);
-    setFactsLoading(true);
-    setFactsError(null);
-    setCandidates([]);
-    try {
-      const { candidates: found, degraded } = await fetchFactCandidates();
-      setCandidates(found);
-      setSelected(new Set(found));
-      if (degraded) setFactsError("Extraction was incomplete — you can retry later.");
-    } catch (err) {
-      setFactsError(err instanceof Error ? err.message : "Extraction failed.");
-    } finally {
-      setFactsLoading(false);
-    }
-  };
-
-  const saveFacts = async () => {
-    setFactsSaving(true);
-    try {
-      await confirmFacts([...selected], pruneAfter);
-      if (pruneAfter) onConversationCleared();
-      setFactsOpen(false);
-    } catch (err) {
-      setFactsError(err instanceof Error ? err.message : "Saving failed.");
-    } finally {
-      setFactsSaving(false);
     }
   };
 
@@ -181,7 +142,7 @@ const SettingsMenu = ({ onConversationCleared }: SettingsMenuProps) => {
             <MessageCircle className="mr-2 h-4 w-4" /> Link WhatsApp
           </DropdownMenuItem>
           <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={openFacts}>
+          <DropdownMenuItem onClick={onOpenFacts}>
             <ListChecks className="mr-2 h-4 w-4" /> Review &amp; save facts
           </DropdownMenuItem>
           <DropdownMenuItem onClick={() => setConfirmClear(true)}>
@@ -251,79 +212,6 @@ const SettingsMenu = ({ onConversationCleared }: SettingsMenuProps) => {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-
-      {/* Review & save facts */}
-      <Dialog open={factsOpen} onOpenChange={setFactsOpen}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Review &amp; save facts</DialogTitle>
-            <DialogDescription>
-              Distilled from your recent conversation. Save the ones that are true —
-              they become part of your blueprint so the conversation can be pruned
-              without losing what matters.
-            </DialogDescription>
-          </DialogHeader>
-
-          {factsLoading ? (
-            <div className="flex justify-center py-6">
-              <div className="h-6 w-6 animate-spin rounded-full border-2 border-muted border-t-primary" />
-            </div>
-          ) : candidates.length === 0 ? (
-            <p className="py-2 text-sm text-muted-foreground">
-              Nothing new to save — either the conversation is empty or everything
-              durable is already in your blueprint.
-            </p>
-          ) : (
-            <div className="max-h-64 space-y-2 overflow-y-auto py-1">
-              {candidates.map((fact) => (
-                <label key={fact} className="flex cursor-pointer items-start gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    className="mt-0.5"
-                    checked={selected.has(fact)}
-                    onChange={(e) => {
-                      const next = new Set(selected);
-                      if (e.target.checked) next.add(fact);
-                      else next.delete(fact);
-                      setSelected(next);
-                    }}
-                  />
-                  <span>{fact}</span>
-                </label>
-              ))}
-            </div>
-          )}
-
-          {!factsLoading && (
-            <label className="flex cursor-pointer items-center gap-2 text-sm text-muted-foreground">
-              <input
-                type="checkbox"
-                checked={pruneAfter}
-                onChange={(e) => setPruneAfter(e.target.checked)}
-              />
-              Clear the conversation after saving
-            </label>
-          )}
-
-          {factsError && <p className="text-sm text-destructive">{factsError}</p>}
-
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setFactsOpen(false)} disabled={factsSaving}>
-              Cancel
-            </Button>
-            <Button
-              onClick={saveFacts}
-              disabled={factsLoading || factsSaving || (candidates.length === 0 && !pruneAfter)}
-            >
-              {factsSaving
-                ? "Saving…"
-                : candidates.length === 0
-                  ? "Clear conversation"
-                  : `Save ${selected.size} fact${selected.size === 1 ? "" : "s"}`}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       {/* Link WhatsApp */}
       <Dialog open={waOpen} onOpenChange={setWaOpen}>

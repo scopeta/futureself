@@ -199,6 +199,19 @@ async def facts_candidates(request: Request, db: DB) -> dict:
     return {"candidates": result.facts, "degraded": bool(result.error)}
 
 
+@router.get("/curator/nudges")
+async def curator_nudges(request: Request, db: DB) -> dict:
+    """Curator v1: rule-based context-quality nudges (no LLM; spec §11.36)."""
+    from dataclasses import asdict  # noqa: PLC0415
+
+    from futureself.web.curator import curate  # noqa: PLC0415
+    from futureself.web.session import get_message_count  # noqa: PLC0415
+
+    user_id, blueprint = await _require_identity(request, db)
+    count = await get_message_count(db, user_id)
+    return {"nudges": [asdict(n) for n in curate(blueprint, count)]}
+
+
 class FactsConfirmRequest(BaseModel):
     facts: list[str] = Field(default_factory=list, max_length=100)
     clear_history: bool = False
