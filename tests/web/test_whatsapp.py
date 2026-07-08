@@ -90,7 +90,8 @@ async def test_link_endpoint_requires_channel(client):
     assert r.status_code == 409  # channel not configured
 
 
-async def test_link_status_unlink_flow(client, twilio_env):
+@patch("futureself.web.whatsapp.send_whatsapp", new_callable=AsyncMock)
+async def test_link_status_unlink_flow(mock_send, client, twilio_env):
     h = await _register(client, "wa-link@example.com")
     r = await client.post("/api/whatsapp/link", headers=h)
     assert r.status_code == 200
@@ -101,10 +102,13 @@ async def test_link_status_unlink_flow(client, twilio_env):
     assert status == {"enabled": True, "phone": None}
 
     # Simulate the user texting LINK <code> from their phone (signed webhook).
+    # The webhook ACKs with empty TwiML; the confirmation arrives via REST send.
     form = {"From": "whatsapp:+6591112222", "Body": f"link {code}"}
     r = await _post_webhook(client, form, _sign(WEBHOOK, form))
     assert r.status_code == 200
-    assert "You're linked" in r.text
+    assert "<Response></Response>" in r.text
+    to_phone, body = mock_send.await_args.args
+    assert to_phone == "+6591112222" and "You're linked" in body
 
     status = (await client.get("/api/whatsapp/status", headers=h)).json()
     assert status["phone"] == "+6591112222"
@@ -130,17 +134,20 @@ async def test_webhook_rejects_bad_signature(client, twilio_env):
     assert r.status_code == 403
 
 
-async def test_webhook_unlinked_phone_gets_instructions(client, twilio_env):
+@patch("futureself.web.whatsapp.send_whatsapp", new_callable=AsyncMock)
+async def test_webhook_unlinked_phone_gets_instructions(mock_send, client, twilio_env):
     form = {"From": "whatsapp:+6599990000", "Body": "hello there"}
     r = await _post_webhook(client, form, _sign(WEBHOOK, form))
     assert r.status_code == 200
-    assert "isn't linked" in r.text
+    assert "<Response></Response>" in r.text  # ACK-first; reply goes via REST
+    assert "isn't linked" in mock_send.await_args.args[1]
 
 
-async def test_webhook_bad_link_code_message(client, twilio_env):
+@patch("futureself.web.whatsapp.send_whatsapp", new_callable=AsyncMock)
+async def test_webhook_bad_link_code_message(mock_send, client, twilio_env):
     form = {"From": "whatsapp:+6599990000", "Body": "LINK ZZZZZZ"}
-    r = await _post_webhook(client, form, _sign(WEBHOOK, form))
-    assert "didn't match" in r.text
+    await _post_webhook(client, form, _sign(WEBHOOK, form))
+    assert "didn't match" in mock_send.await_args.args[1]
 
 
 @patch("futureself.web.whatsapp.send_whatsapp", new_callable=AsyncMock)
@@ -154,11 +161,12 @@ async def test_webhook_linked_phone_runs_turn(
 
     mock_syn.return_value = "Hello from your future self."
 
-    # Link a phone to a registered user.
+    # Link a phone to a registered user (confirmation send: 1st REST call).
     h = await _register(client, "wa-turn@example.com")
     code = (await client.post("/api/whatsapp/link", headers=h)).json()["code"]
     link = {"From": "whatsapp:+6597770000", "Body": f"LINK {code}"}
     await _post_webhook(client, link, _sign(WEBHOOK, link))
+    mock_send.reset_mock()
 
     # Now a chat message → empty TwiML immediately, reply sent async via REST.
     form = {"From": "whatsapp:+6597770000", "Body": "How do I sleep better?"}

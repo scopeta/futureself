@@ -614,10 +614,15 @@ transcript, per §11.1. Implementation (`web/whatsapp.py` + `web/routes/whatsapp
 - **Webhook trust:** `POST /api/whatsapp/webhook` carries no Bearer token —
   Twilio's `X-Twilio-Signature` (HMAC-SHA1 over URL + sorted form params) is
   validated instead; `TWILIO_WEBHOOK_URL` pins the signed URL behind the proxy.
-- **Async replies:** an agent turn can exceed Twilio's ~15s webhook timeout, so
-  the webhook ACKs with empty TwiML immediately and a background task runs the
-  turn (same `synthesize` + `append_messages` as the web path, own DB sessions)
-  and delivers the reply via Twilio's REST API. Link confirmations reply inline.
+- **ACK-first, everything async:** Twilio's ~15s webhook timeout can't survive a
+  serverless Azure SQL resume (30–60s), let alone an agent turn — so the webhook
+  does **no DB work at all**: validate signature (env-only), ACK with empty
+  TwiML, and process in a background task (link codes, phone lookup, the turn —
+  same `synthesize` + `append_messages` as the web path, own DB sessions with a
+  retry loop that rides out the DB resume). Every reply, including link
+  confirmations, is delivered via Twilio's REST API. (Lesson from prod: the
+  original design did the phone lookup in-request and every after-idle message
+  died at Twilio's timeout with total silence for the user.)
 - **Setup:** point a Twilio WhatsApp sender (sandbox or Business number) at
   `https://<app>/api/whatsapp/webhook`, set the three env vars (+
   `TWILIO_WEBHOOK_URL`) as Container App secrets/env.
