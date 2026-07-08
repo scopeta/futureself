@@ -48,6 +48,7 @@ When rebuilding or refactoring, resolve conflicts in this order:
 - `src/futureself/skills/<domain>/SKILL.md` — domain skill files.
 - `src/futureself/orchestrator.py` — `build_agent`, the single agent builder (run by the hosted agent in `main.py`).
 - `src/futureself/web/agent_client.py` — BFF→hosted-agent client (`synthesize` + bounded `build_user_context`); the BFF no longer runs the agent in-process.
+- `src/futureself/web/` — `session.py` (accounts/sessions/transcript), `passwords.py` (email auth), `facts.py` (user-confirmed fact distillation), `curator.py` (rule-based context-quality nudges — a policy module, NOT a second agent), `whatsapp.py` + `routes/whatsapp.py` (Twilio channel).
 - `main.py` — Foundry Hosted Agent entrypoint (`ResponsesAgentServerHost` on :8088).
 - `agent.yaml` — `azd ai agent` hosted-agent manifest (flat schema: `protocol: responses`, `environment_variables`, Anthropic-direct).
 - `Dockerfile.agent` — dedicated image for the hosted agent (runs `python main.py`, not the BFF).

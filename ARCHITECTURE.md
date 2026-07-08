@@ -169,6 +169,14 @@ structurally impossible now, and why per-turn cost is bounded.
 - **Observability-first** → distributed tracing in App Insights literally *proves*
   the "~1–2 completions per turn" claim (two `chat` spans with `load_skill`
   between them; BFF role `futureself-bff`, agent role `agentsv2`).
+- **Fit-for-purpose auth** → Entra SSO was built and then deliberately *not*
+  activated: open trials shouldn't require Azure AD accounts. Email/password
+  (PBKDF2, same session-token mechanism, same authorization invariant) shipped
+  instead; Entra stays flagged as the enterprise upgrade path.
+- **Roles before agents** → the Curator (context freshness: fact-review prompts,
+  retest protocols, blueprint gaps) is a *policy module*, not a second agent —
+  deterministic rules surfaced as neutral UI copy. An LLM/A2A version is a
+  documented upgrade path, taken only when rules demonstrably fall short.
 
 ---
 
@@ -406,7 +414,11 @@ flowchart TD
 | `frontend/` | React + Vite + Tailwind SPA. `lib/api.ts` calls the BFF; chat + Blueprint pages. |
 | `src/futureself/web/app.py` | FastAPI factory: CORS, router mount, OTel, serves built SPA. |
 | `src/futureself/web/routes/api.py` | JSON REST endpoints (session, chat, blueprint, quality). |
-| `src/futureself/web/session.py` | Bearer-token sessions + the `messages` transcript store, backed by Azure SQL. |
+| `src/futureself/web/session.py` | Sessions, accounts, `messages` transcript store, WhatsApp binding — backed by Azure SQL. |
+| `src/futureself/web/passwords.py` | PBKDF2 password hashing (stdlib-only) for email/password auth. |
+| `src/futureself/web/facts.py` | Fact distiller — LLM pass proposing candidates; user confirms (memory lifecycle). |
+| `src/futureself/web/curator.py` | Curator v1 — rule-based context-quality nudges (no LLM, no second agent). |
+| `src/futureself/web/whatsapp.py` + `routes/whatsapp.py` | WhatsApp channel: Twilio signature auth, link codes, async replies. |
 | `src/futureself/orchestrator.py` | `build_agent` — the single agent builder (run by the hosted agent). |
 | `src/futureself/web/agent_client.py` | BFF→hosted-agent client: `synthesize` + bounded `build_user_context`. |
 | `src/futureself/schemas.py` | Pydantic data contracts (`UserBlueprint`, results, traces). |
@@ -427,18 +439,28 @@ flowchart TD
 
 ## 9. REST API surface (BFF)
 
-All under `/api`; chat and blueprint routes require `Authorization: Bearer <token>`.
+All under `/api`; everything except session/auth/webhook requires
+`Authorization: Bearer <token>`.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `POST` | `/session/create` | Create a blank session, return a session token. |
+| `POST` | `/session/create` | Anonymous session (kept for tooling; the UI uses accounts). |
+| `POST` | `/auth/register` \| `/auth/login` \| `/auth/logout` | Email/password accounts → session token. |
+| `POST` | `/onboarding/complete` | Mark onboarding done (`UserBlueprint.onboarded`). |
+| `POST` | `/account/reset` | Delete all data (Blueprint + transcript), keep login, re-onboard. |
 | `POST` | `/chat/send` | Run one turn; return the Future Self reply. |
+| `DELETE` | `/messages` | Clear conversation history only (Blueprint untouched). |
+| `POST` | `/facts/candidates` \| `/facts/confirm` | Fact distillation: propose → user-confirmed save (+ optional prune). |
+| `GET` | `/curator/nudges` | Curator v1: rule-based context-quality nudges. |
 | `GET` | `/blueprint` | Read the current Blueprint. |
-| `PATCH` | `/blueprint/bio` \| `/context` \| `/psych` | Update a Blueprint section. |
-| `POST` | `/blueprint/biomarkers` | Append a biomarker entry. |
+| `PATCH` | `/blueprint/bio` \| `/context` \| `/psych` | **Partial-merge** update of a Blueprint section. |
+| `POST` | `/blueprint/biomarkers` | Add a measurement (dated data point per marker). |
+| `PUT` | `/blueprint/biomarkers` | Replace the history — edit/delete any measurement. |
 | `POST` | `/blueprint/supplements` | Add/replace a supplement (by name). |
 | `DELETE` | `/blueprint/supplements/{name}` | Remove a supplement. |
 | `GET` | `/blueprint/quality` | Rule-based data-quality report. |
+| `POST` | `/whatsapp/link` \| `/whatsapp/unlink`, `GET /whatsapp/status` | WhatsApp channel binding (one-time code). |
+| `POST` | `/whatsapp/webhook` | Twilio inbound (signature-authenticated; no Bearer). |
 
 ---
 

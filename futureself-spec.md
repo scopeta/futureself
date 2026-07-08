@@ -120,7 +120,9 @@ separate `messages` table, §11.1, not on the Blueprint):
 - `psych: PsychData`
 - `context: ContextData`
 - `inferred_facts: list[str]` — **confirmed-only.** Not auto-inferred from model
-  output (that caused drift); populated solely via validated paths, empty until then.
+  output (that caused drift); populated solely via validated paths — today that is
+  the user-confirmed fact distillation (§11.1).
+- `onboarded: bool` — set by the onboarding wizard; reset by "delete all data".
 
 Class method:
 - `from_dict(data: dict) -> UserBlueprint` — used by scenario test loader.
@@ -356,15 +358,36 @@ monkeypatch.setattr(agent_client, "_client", lambda: fake)
 - Deployment: Azure Container Apps (Southeast Asia), FastAPI on port 8000, Docker image on `futureselfacr.azurecr.io`.
 - LLM calls: 7–11 → ~1–2 per turn (one synthesis pass; +1 completion when skills load via tool call).
 
-**Phase 6: The Data** — *Active*
-- User persistence (saving blueprint state across sessions).
-- Supplement tracking and biomarker measurement history.
-- Blueprint data quality verification and context drift flagging.
-- Conversation history population.
+**Phase 6: The Data** — *Complete*
+- User persistence (Azure SQL; Blueprint per user, transcript in `messages`). ✓
+- Supplement tracking and biomarker measurement history (dated data points per
+  marker; add/edit/delete via partial-merge PATCH + `PUT /blueprint/biomarkers`). ✓
+- Blueprint data quality verification (`blueprint_quality`) and freshness
+  flagging (Curator retest protocols, §11.36). ✓
+- Conversation history population + memory lifecycle (distill→confirm→prune, §11.1). ✓
 
-**Phase 6.5: Identity & Onboarding (Entra ID)** — *Backend complete (feature-flagged); frontend + activation folded into §11*
+**Phase 6.5: Identity & Onboarding** — *Complete (email/password); Entra SSO built + flagged OFF as an optional upgrade*
 
 Prerequisite slice for productionizing Phase 6: every Blueprint row must be owned by an authenticated user, and no user may read or mutate another user's data.
+
+**Shipped (2026-07-03) — email/password identity + onboarding:**
+
+- **Design decision:** the goal became "let many people *try* the app," and
+  Entra sign-in would force every tester to have an Azure AD account. Shipped
+  instead: lightweight **email/password** auth — `POST /auth/register|login|logout`
+  issuing the same Bearer session tokens the app already used, PBKDF2-SHA256
+  hashing (`web/passwords.py`, stdlib-only), `users.email`+`password_hash`
+  (migration `0006`, filtered-unique like `oid`). The **authorization invariant
+  is unchanged**: `user_id` is always resolved server-side from the session
+  token, never from request input.
+- **Onboarding wizard:** `/login` (sign-in/register) and `/onboarding` (2-step
+  minimum-viable Blueprint: age/sex/country/occupation, goals/stress) — gated on
+  `UserBlueprint.onboarded`; "delete all data & restart" (`POST /account/reset`)
+  wipes Blueprint + transcript, keeps the login, and re-runs onboarding.
+- **Session affordance:** settings menu shows logout; sessions are server-side
+  rows (revocable via `/auth/logout`).
+
+**Entra ID path — built, feature-flagged OFF (the original plan below):**
 
 **Implementation status & sequencing (2026-06-24):**
 
@@ -404,9 +427,14 @@ UI deliverables (React frontend):
 
 Schema impact (Section 5.1): `UserBlueprint` is conceptually per-user; the persisted row carries `user_id` as an opaque key. The Pydantic model itself does not need to expose `user_id` — it remains an envelope concern owned by the persistence layer and the auth middleware.
 
-**Phase 7: The Advanced Interface**
-- WhatsApp integration as primary conversational interface.
-- Web UI includes blueprint management, data quality flags, and lab test/exam uploads.
+**Phase 7: The Advanced Interface** — *Active (WhatsApp live)*
+- WhatsApp integration (§11.35) — **live** via Twilio sandbox: link-code binding,
+  signature-authenticated webhook, async replies, shared Blueprint + transcript. ✓
+  *Pending for production:* WhatsApp Business sender (own number, "FutureSelf"
+  display name — needs Meta business verification).
+- Web UI blueprint management (time-series biomarkers, goals, lifestyle) ✓ and
+  data-quality flags (quality score + Curator nudges) ✓.
+- *Pending:* lab test/exam uploads (`ExamRecord` capture UI + extraction).
 
 **Phase 8: Enhance Skills** *(Continuous)*
 - Specialized tools to expand skill capabilities.
@@ -570,7 +598,7 @@ model. Seam: `x-memory-user-id = user_id` + the Memory Store API.
 - SkillsProvider and `load_skill` flow (Section 6).
 - Blueprint immutability rule (Section 5.1).
 
-### 11.35 WhatsApp channel (Phase 7, shipped behind a flag)
+### 11.35 WhatsApp channel (Phase 7 — LIVE in production, Twilio sandbox sender)
 
 WhatsApp is a **second channel onto the same user** — one Blueprint, one
 transcript, per §11.1. Implementation (`web/whatsapp.py` + `web/routes/whatsapp.py`):
@@ -617,20 +645,22 @@ single-voice rule holds: no second persona ever addresses the user.
   advise this user well?") once Foundry A2A is GA. Neither changes the
   user-facing single-agent contract.
 
-### 11.4 Auth activation (Phase 6.5 completion lands here)
+### 11.4 Auth — SHIPPED as email/password; Entra activation now optional
 
-Real Entra login is switched on as part of this migration — against the final
-topology, so it happens once (see Phase 6.5 sequencing):
-- **Frontend:** wire MSAL.js in the React app (login gate, `acquireTokenSilent`,
-  attach `Authorization: Bearer <jwt>`), register the SPA redirect URI in the
-  Entra app registration, and build the frontend with the (public) client/tenant IDs.
-- **Backend:** set `ENTRA_TENANT_ID` + `ENTRA_CLIENT_ID` on the BFF to flip the
-  already-shipped JWT-validation path from anonymous to required (§6.5).
+**Superseded (2026-07-03):** identity went live as **email/password** (Phase 6.5)
+rather than Entra activation — open trials shouldn't require Azure AD accounts.
+The Entra path remains fully built and feature-flagged OFF; activating it later
+as an SSO option would take:
+- **Frontend:** wire MSAL.js (login gate, `acquireTokenSilent`, attach
+  `Authorization: Bearer <jwt>`), register the SPA redirect URI, build with the
+  public client/tenant IDs.
+- **Backend:** set `ENTRA_TENANT_ID` + `ENTRA_CLIENT_ID` to flip the shipped
+  JWT-validation path on (§6.5). Note `_require_identity` is currently
+  either/or — offering Entra *alongside* email login would need it to accept both
+  credential types.
 - **No per-user thread binding needed:** conversation state lives in the
-  `messages` table keyed by the server-resolved `user_id` (§11.1), so the
-  `oid → user_id` resolution from §6.5 already isolates each user's history.
-  Should Foundry-managed threads/memory ever be adopted, the thread id would bind
-  to the `users` row and the authorization invariant would extend to it.
+  `messages` table keyed by the server-resolved `user_id` (§11.1); the
+  authorization invariant is identical for session tokens and Entra `oid`s.
 
 ---
 
@@ -648,4 +678,4 @@ A rebuild from scratch is valid only if all are true:
 6. **Empty model replies do not crash a turn.**
 7. **Tests from Section 9 are present and passing.**
 8. **Persistence boundaries follow Section 11.1: Blueprint (domain state) and the append-only `messages` transcript both in Azure SQL; facts are validated-only (no auto-inference); Foundry-managed memory is deferred.**
-9. **Per-user authorization invariant (Phase 6.5): every user-data query is filtered by a `user_id` resolved from a validated Entra ID token, never from client-supplied input. Cross-tenant access denial test is present and passing.**
+9. **Per-user authorization invariant (Phase 6.5): every user-data query is filtered by a `user_id` resolved server-side from a validated credential — a session token (email/password or anonymous) or, when activated, an Entra token's `oid` — never from client-supplied input. Cross-user access denial tests are present and passing.**
